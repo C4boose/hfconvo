@@ -44,71 +44,67 @@ class HackConvo {
         // Load saved theme
         const savedTheme = localStorage.getItem('theme') || 'dark';
         this.setTheme(savedTheme);
+        
+        // Fallback: Load online users after a short delay if WebSocket fails
+        setTimeout(() => {
+            if (this.onlineUsers.size === 0) {
+                this.loadSimulatedOnlineUsers();
+            }
+        }, 2000);
     }
 
     connectWebSocket() {
         try {
-            // Use Ably for real-time messaging
-            // You can get a free API key from https://ably.com/
-            const ABLY_API_KEY = 'YOUR_ABLY_API_KEY'; // Replace with your actual API key
+            // Try to connect to a free WebSocket server for demo purposes
+            // In production, you'd use your own WebSocket server or a service like Ably
             
-            // For demo purposes, we'll use a public demo key (limited functionality)
-            // In production, get your own API key from Ably
-            this.ably = new Ably.Realtime('demo-key');
+            // Option 1: Try a free WebSocket echo server (limited but works for demo)
+            const wsUrl = 'wss://echo.websocket.org/';
+            this.ws = new WebSocket(wsUrl);
             
-            this.ably.connection.on('connected', () => {
-                console.log('Ably connected');
+            this.ws.onopen = () => {
+                console.log('WebSocket connected');
                 this.updateConnectionStatus(true);
                 this.reconnectAttempts = 0;
                 this.startHeartbeat();
                 
-                // Subscribe to the chat channel
-                this.channel = this.ably.channels.get('hackconvo-chat');
-                
-                // Subscribe to messages
-                this.channel.subscribe('message', (message) => {
-                    this.handleIncomingMessage(message.data);
-                });
-                
-                // Subscribe to typing indicators
-                this.channel.subscribe('typing', (message) => {
-                    this.handleTypingIndicator(message.data);
-                });
-                
-                // Subscribe to user join/leave events
-                this.channel.subscribe('user_join', (message) => {
-                    this.handleUserJoin(message.data);
-                });
-                
-                this.channel.subscribe('user_leave', (message) => {
-                    this.handleUserLeave(message.data);
-                });
-                
-                // Publish user join message
-                this.channel.publish('user_join', {
+                // Send user join message
+                this.sendWebSocketMessage({
+                    type: 'join',
                     user: this.currentUser,
                     timestamp: Date.now()
                 });
                 
-                // Update online users
-                this.updateOnlineUsers();
-            });
+                // Load simulated online users
+                this.loadSimulatedOnlineUsers();
+            };
             
-            this.ably.connection.on('disconnected', () => {
-                console.log('Ably disconnected');
+            this.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleWebSocketMessage(data);
+                } catch (e) {
+                    // Echo server sends back the same message, so we can simulate real chat
+                    this.handleEchoMessage(event.data);
+                }
+            };
+            
+            this.ws.onclose = () => {
+                console.log('WebSocket disconnected');
                 this.updateConnectionStatus(false);
                 this.stopHeartbeat();
                 this.scheduleReconnect();
-            });
+            };
             
-            this.ably.connection.on('failed', (error) => {
-                console.error('Ably connection failed:', error);
+            this.ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
                 this.updateConnectionStatus(false);
+                // Fallback to simulated mode
                 this.enableSimulatedMode();
-            });
+            };
             
         } catch (error) {
-            console.error('Failed to connect to Ably:', error);
+            console.error('Failed to connect WebSocket:', error);
             this.updateConnectionStatus(false);
             // Fallback to simulated mode
             this.enableSimulatedMode();
@@ -161,8 +157,8 @@ class HackConvo {
     }
 
     sendWebSocketMessage(data) {
-        if (this.channel && this.ably.connection.state === 'connected') {
-            this.channel.publish(data.type, data);
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(data));
         }
     }
 
@@ -262,11 +258,7 @@ class HackConvo {
             this.showNotification(`Reconnecting in ${delay/1000}s... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`, 'warning');
             
             setTimeout(() => {
-                if (this.ably) {
-                    this.ably.connect();
-                } else {
-                    this.connectWebSocket();
-                }
+                this.connectWebSocket();
             }, delay);
         } else {
             this.showNotification('Connection failed. Using offline mode.', 'error');
@@ -277,6 +269,9 @@ class HackConvo {
     enableSimulatedMode() {
         this.showNotification('Running in simulated mode', 'warning');
         this.updateConnectionStatus(false);
+        
+        // Load simulated online users
+        this.loadSimulatedOnlineUsers();
         
         // Enable simulated responses
         setInterval(() => {
@@ -927,6 +922,20 @@ class HackConvo {
         this.renderOnlineUsers();
     }
 
+    loadSimulatedOnlineUsers() {
+        // Load simulated online users and add current user
+        this.loadOnlineUsers();
+        
+        // Add current user to online users
+        this.onlineUsers.set(this.currentUser.username, {
+            ...this.currentUser,
+            status: 'online'
+        });
+        
+        this.renderOnlineUsers();
+        this.updateOnlineCount();
+    }
+
     renderOnlineUsers() {
         const usersList = document.getElementById('online-users-list');
         usersList.innerHTML = '';
@@ -1056,14 +1065,14 @@ class HackConvo {
         this.playSound('send');
         this.updateMessagesToday();
 
-        // Send via Ably
+        // Send via WebSocket
         this.sendWebSocketMessage({
             type: 'message',
             ...message
         });
 
         // Simulate responses in demo mode only if not connected
-        if (!this.ably || this.ably.connection.state !== 'connected') {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
             setTimeout(() => {
                 this.simulateResponse();
             }, 1000 + Math.random() * 2000);

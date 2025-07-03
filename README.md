@@ -14,28 +14,36 @@ A modern, real-time chat application for developers and tech enthusiasts.
 
 ## Setup Instructions
 
-### For Real-time Messaging (Required for multi-device chat)
+### Current Demo Mode
 
-The chat application uses Ably for real-time messaging. To enable messages to appear on other devices:
+The chat application is currently running in **demo mode** with simulated real-time features:
 
+- ✅ **Simulated online users** - Shows fake users in the sidebar
+- ✅ **Simulated responses** - Bot users respond to your messages
+- ✅ **Typing indicators** - Shows when simulated users are typing
+- ✅ **Connection status** - Shows connection to echo server
+- ❌ **Real multi-device chat** - Messages only appear on the sending device
+
+### For Real Multi-Device Chat
+
+To enable messages to appear on other devices, you have several options:
+
+#### Option 1: Use Ably (Recommended)
 1. **Get a free Ably API key:**
    - Go to [https://ably.com/](https://ably.com/)
    - Sign up for a free account
    - Create a new app
    - Copy your API key
 
-2. **Update the API key in the code:**
-   - Open `script.js`
-   - Find line 52: `const ABLY_API_KEY = 'YOUR_ABLY_API_KEY';`
-   - Replace `'YOUR_ABLY_API_KEY'` with your actual API key
+2. **Update the code:**
+   - Replace the WebSocket connection with Ably
+   - See `deploy.md` for detailed instructions
 
-3. **Test the chat:**
-   - Open the chat in multiple browser tabs or devices
-   - Messages should now appear on all connected devices in real-time
+#### Option 2: Use Firebase Realtime Database
+- See `deploy.md` for Firebase setup instructions
 
-### Demo Mode (Current Setup)
-
-Currently, the app is using Ably's demo key which has limited functionality. For full real-time messaging, you need your own API key as described above.
+#### Option 3: Build Your Own WebSocket Server
+- See `deploy.md` for Node.js + Socket.io setup
 
 ## How It Works
 
