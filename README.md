@@ -12,45 +12,43 @@ A modern, real-time chat application for developers and tech enthusiasts.
 - Screen sharing and video chat capabilities
 - Responsive design
 
-## Setup Instructions
+## Setup Instructionsds
 
-### Current Demo Mode
+### Current Status
 
-The chat application is currently running in **demo mode** with simulated real-time features:
+The chat application is now set up for **real-time cross-network messaging** using Firebase:
 
-- ✅ **Simulated online users** - Shows fake users in the sidebar
-- ✅ **Simulated responses** - Bot users respond to your messages
-- ✅ **Typing indicators** - Shows when simulated users are typing
-- ✅ **Connection status** - Shows connection to echo server
-- ❌ **Real multi-device chat** - Messages only appear on the sending device
+- ✅ **Real-time messaging** - Messages appear instantly across all devices and networks
+- ✅ **Live user tracking** - See real users who are online
+- ✅ **Typing indicators** - Real-time typing indicators
+- ✅ **Message persistence** - Messages are stored and synced
+- ✅ **Cross-device support** - Works on phones, computers, tablets
+- ✅ **No simulations** - All messages and users are real
+- ⚠️ **Setup required** - You need to configure Firebase (see FIREBASE_SETUP.md)
 
-### For Real Multi-Device Chat
+### Quick Start (5 minutes)
 
-To enable messages to appear on other devices, you have several options:
+**Follow the setup guide in `FIREBASE_SETUP.md` to get real-time messaging working:**
 
-#### Option 1: Use Ably (Recommended)
-1. **Get a free Ably API key:**
-   - Go to [https://ably.com/](https://ably.com/)
-   - Sign up for a free account
-   - Create a new app
-   - Copy your API key
+1. **Create Firebase project** - Free account at [console.firebase.google.com](https://console.firebase.google.com/)
+2. **Enable Realtime Database** - One click setup
+3. **Get your config** - Copy the configuration
+4. **Update the code** - Replace the config in `index.html`
+5. **Test it** - Messages work across all devices and networks!
 
-2. **Update the code:**
-   - Replace the WebSocket connection with Ably
-   - See `deploy.md` for detailed instructions
+### Alternative Options
 
-#### Option 2: Use Firebase Realtime Database
-- See `deploy.md` for Firebase setup instructions
-
-#### Option 3: Build Your Own WebSocket Server
-- See `deploy.md` for Node.js + Socket.io setup
+If you prefer other services:
+- **Ably** - See `deploy.md` for Ably setup
+- **Custom WebSocket** - See `deploy.md` for Node.js setup
 
 ## How It Works
 
-- **Real-time Messaging**: Uses Ably's pub/sub system to broadcast messages to all connected clients
-- **User Management**: Tracks online users and their status
-- **Typing Indicators**: Shows when users are typing
-- **Fallback Mode**: If connection fails, falls back to simulated responses
+- **Real-time Messaging**: Uses Firebase Realtime Database to sync messages across all devices
+- **User Management**: Tracks real online users and their status
+- **Typing Indicators**: Real-time typing indicators across all devices
+- **Message Persistence**: Messages are stored and synced automatically
+- **Cross-Network**: Works between any devices on any networks
 
 ## File Structure
 

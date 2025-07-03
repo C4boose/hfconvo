@@ -11,6 +11,37 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Firebase SDK for real-time messaging -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getDatabase, ref, push, onValue, off } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+        import { getAnalytics } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics.js';
+        
+        // Your web app's Firebase configuration
+        const firebaseConfig = {
+            apiKey: "AIzaSyDwasB-_1Gp_kdUrQ9Eooyr-6TeIspEps8",
+            authDomain: "hfconvo.firebaseapp.com",
+            databaseURL: "https://hfconvo-default-rtdb.firebaseio.com",
+            projectId: "hfconvo",
+            storageBucket: "hfconvo.firebasestorage.app",
+            messagingSenderId: "213229553935",
+            appId: "1:213229553935:web:6d01c2c4455a610eed567a",
+            measurementId: "G-KF9MVZDJ3H"
+        };
+        
+        // Initialize Firebase
+        const app = initializeApp(firebaseConfig);
+        const database = getDatabase(app);
+        const analytics = getAnalytics(app);
+        
+        // Make Firebase available globally
+        window.firebaseApp = app;
+        window.firebaseDatabase = database;
+        window.firebaseRef = ref;
+        window.firebasePush = push;
+        window.firebaseOnValue = onValue;
+        window.firebaseOff = off;
+    </script>
 </head>
 <body>
     <div id="container">
@@ -154,7 +185,7 @@
                     </div>
                 </div>
 
-                <!-- Media Display Area -->
+                <!-- Mediad Display Area -->
                 <div class="media-display" id="media-display" style="display: none;">
                     <div class="media-grid" id="media-grid">
                         <!-- Video/Screen shares will appear here -->

@@ -225,7 +225,7 @@ Happy chatting! 🚀
 2. Open the same file in another browser tab or device
 3. Send messages - they should appear on both devices!
 
-### Step 4: Deploy to Web Server
+### Step 4: Deploy to Web Serverd
 
 Upload these files to your web server:
 - `index.html`

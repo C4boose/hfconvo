@@ -45,68 +45,70 @@ class HackConvo {
         const savedTheme = localStorage.getItem('theme') || 'dark';
         this.setTheme(savedTheme);
         
-        // Fallback: Load online users after a short delay if WebSocket fails
-        setTimeout(() => {
-            if (this.onlineUsers.size === 0) {
-                this.loadSimulatedOnlineUsers();
-            }
-        }, 2000);
+        // Firebase will handle rseal-time users and messages
     }
 
     connectWebSocket() {
         try {
-            // Try to connect to a free WebSocket server for demo purposes
-            // In production, you'd use your own WebSocket server or a service like Ably
+            // Wait for Firebase to be available
+            if (window.firebaseDatabase) {
+                this.connectFirebase();
+            } else {
+                // Wait a bit for Firebase to load
+                setTimeout(() => {
+                    if (window.firebaseDatabase) {
+                        this.connectFirebase();
+                    } else {
+                        console.error('Firebase not available');
+                        this.updateConnectionStatus(false);
+                        this.enableSimulatedMode();
+                    }
+                }, 1000);
+            }
+        } catch (error) {
+            console.error('Failed to connect:', error);
+            this.updateConnectionStatus(false);
+            this.enableSimulatedMode();
+        }
+    }
+
+    connectFirebase() {
+        try {
+            this.database = window.firebaseDatabase;
+            this.ref = window.firebaseRef;
+            this.push = window.firebasePush;
+            this.onValue = window.firebaseOnValue;
+            this.off = window.firebaseOff;
             
-            // Option 1: Try a free WebSocket echo server (limited but works for demo)
-            const wsUrl = 'wss://echo.websocket.org/';
-            this.ws = new WebSocket(wsUrl);
+            console.log('Firebase connected');
+            this.updateConnectionStatus(true);
+            this.reconnectAttempts = 0;
+            this.startHeartbeat();
             
-            this.ws.onopen = () => {
-                console.log('WebSocket connected');
-                this.updateConnectionStatus(true);
-                this.reconnectAttempts = 0;
-                this.startHeartbeat();
-                
-                // Send user join message
-                this.sendWebSocketMessage({
-                    type: 'join',
-                    user: this.currentUser,
-                    timestamp: Date.now()
-                });
-                
-                // Load simulated online users
-                this.loadSimulatedOnlineUsers();
-            };
-            
-            this.ws.onmessage = (event) => {
-                try {
-                    const data = JSON.parse(event.data);
-                    this.handleWebSocketMessage(data);
-                } catch (e) {
-                    // Echo server sends back the same message, so we can simulate real chat
-                    this.handleEchoMessage(event.data);
+            // Subscribe to messages
+            this.messagesRef = this.ref(this.database, 'messages');
+            this.onValue(this.messagesRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    this.handleFirebaseMessages(data);
                 }
-            };
+            });
             
-            this.ws.onclose = () => {
-                console.log('WebSocket disconnected');
-                this.updateConnectionStatus(false);
-                this.stopHeartbeat();
-                this.scheduleReconnect();
-            };
+            // Subscribe to online users
+            this.usersRef = this.ref(this.database, 'users');
+            this.onValue(this.usersRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    this.handleFirebaseUsers(data);
+                }
+            });
             
-            this.ws.onerror = (error) => {
-                console.error('WebSocket error:', error);
-                this.updateConnectionStatus(false);
-                // Fallback to simulated mode
-                this.enableSimulatedMode();
-            };
+            // Add current user to online users
+            this.addUserToFirebase();
             
         } catch (error) {
-            console.error('Failed to connect WebSocket:', error);
+            console.error('Failed to connect to Firebase:', error);
             this.updateConnectionStatus(false);
-            // Fallback to simulated mode
             this.enableSimulatedMode();
         }
     }
@@ -156,10 +158,66 @@ class HackConvo {
         }
     }
 
-    sendWebSocketMessage(data) {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify(data));
+    sendFirebaseMessage(message) {
+        if (this.push && this.messagesRef) {
+            this.push(this.messagesRef, message);
         }
+    }
+
+    addUserToFirebase() {
+        if (this.push && this.usersRef) {
+            const userRef = this.ref(this.database, `users/${this.currentUser.username}`);
+            this.push(userRef, {
+                ...this.currentUser,
+                lastSeen: Date.now(),
+                status: 'online'
+            });
+        }
+    }
+
+    handleFirebaseMessages(data) {
+        // Convert Firebase object to array and sort by timestamp
+        const messages = Object.values(data).sort((a, b) => a.timestamp - b.timestamp);
+        
+        // Only process new messages
+        const lastMessageId = localStorage.getItem('lastFirebaseMessageId');
+        let newMessages = messages;
+        
+        if (lastMessageId) {
+            const lastMessageIndex = messages.findIndex(m => m.id === lastMessageId);
+            if (lastMessageIndex !== -1) {
+                newMessages = messages.slice(lastMessageIndex + 1);
+            }
+        }
+        
+        // Process new messages
+        newMessages.forEach(message => {
+            if (message.author !== this.currentUser.username) {
+                this.handleIncomingMessage(message);
+            }
+        });
+        
+        // Store last message ID
+        if (messages.length > 0) {
+            localStorage.setItem('lastFirebaseMessageId', messages[messages.length - 1].id);
+        }
+    }
+
+    handleFirebaseUsers(data) {
+        // Convert Firebase object to array
+        const users = Object.values(data);
+        
+        // Clear current online users
+        this.onlineUsers.clear();
+        
+        // Add all users
+        users.forEach(user => {
+            this.onlineUsers.set(user.username, user);
+        });
+        
+        // Update UI
+        this.renderOnlineUsers();
+        this.updateOnlineCount();
     }
 
     handleIncomingMessage(data) {
@@ -267,26 +325,22 @@ class HackConvo {
     }
 
     enableSimulatedMode() {
-        this.showNotification('Running in simulated mode', 'warning');
+        this.showNotification('Firebase connection failed. Please check your internet connection.', 'error');
         this.updateConnectionStatus(false);
-        
-        // Load simulated online users
-        this.loadSimulatedOnlineUsers();
-        
-        // Enable simulated responses
-        setInterval(() => {
-            if (Math.random() < 0.3) { // 30% chance every 10 seconds
-                this.simulateResponse();
-            }
-        }, 10000);
     }
 
     startHeartbeat() {
         this.heartbeatInterval = setInterval(() => {
-            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                this.sendWebSocketMessage({ type: 'ping' });
+            // Update user's last seen timestamp
+            if (this.push && this.usersRef) {
+                const userRef = this.ref(this.database, `users/${this.currentUser.username}`);
+                this.push(userRef, {
+                    ...this.currentUser,
+                    lastSeen: Date.now(),
+                    status: 'online'
+                });
             }
-        }, 30000); // Send heartbeat every 30 seconds
+        }, 30000); // Update every 30 seconds
     }
 
     stopHeartbeat() {
@@ -906,34 +960,14 @@ class HackConvo {
     }
 
     loadOnlineUsers() {
-        // Simulate online users for demo
-        const users = [
-            { username: 'DevExpert', avatar: 'https://ui-avatars.com/api/?name=DevExpert&background=007bff&color=fff', status: 'online' },
-            { username: 'CyberSage', avatar: 'https://ui-avatars.com/api/?name=CyberSage&background=28a745&color=fff', status: 'online' },
-            { username: 'TechGuru', avatar: 'https://ui-avatars.com/api/?name=TechGuru&background=dc3545&color=fff', status: 'online' },
-            { username: 'CodeNinja', avatar: 'https://ui-avatars.com/api/?name=CodeNinja&background=ffc107&color=fff', status: 'online' },
-            { username: 'DigitalWizard', avatar: 'https://ui-avatars.com/api/?name=DigitalWizard&background=17a2b8&color=fff', status: 'online' }
-        ];
-        
-        users.forEach(user => {
-            this.onlineUsers.set(user.username, user);
-        });
-        
+        // Real users will be loaded from Firebase
+        this.onlineUsers.clear();
         this.renderOnlineUsers();
     }
 
     loadSimulatedOnlineUsers() {
-        // Load simulated online users and add current user
-        this.loadOnlineUsers();
-        
-        // Add current user to online users
-        this.onlineUsers.set(this.currentUser.username, {
-            ...this.currentUser,
-            status: 'online'
-        });
-        
-        this.renderOnlineUsers();
-        this.updateOnlineCount();
+        // This function is no longer needed - Firebase handles real users
+        console.log('Real-time users will be loaded from Firebase');
     }
 
     renderOnlineUsers() {
@@ -957,35 +991,8 @@ class HackConvo {
     }
 
     loadMessages() {
-        // Load some initial messages for demo
-        const initialMessages = [
-            {
-                id: this.generateId(),
-                author: 'System',
-                avatar: 'https://ui-avatars.com/api/?name=System&background=6c757d&color=fff',
-                text: 'Welcome to HackConvo! This is a real-time chat platform for developers and tech enthusiasts.',
-                timestamp: Date.now() - 300000,
-                own: false
-            },
-            {
-                id: this.generateId(),
-                author: 'DevExpert',
-                avatar: 'https://ui-avatars.com/api/?name=DevExpert&background=007bff&color=fff',
-                text: 'Hey everyone! How\'s the coding going today?',
-                timestamp: Date.now() - 240000,
-                own: false
-            },
-            {
-                id: this.generateId(),
-                author: 'CyberSage',
-                avatar: 'https://ui-avatars.com/api/?name=CyberSage&background=28a745&color=fff',
-                text: 'Just finished a new security audit. Anyone working on interesting projects?',
-                timestamp: Date.now() - 180000,
-                own: false
-            }
-        ];
-        
-        this.messages = initialMessages;
+        // Start with empty messages - real messages will come from Firebase
+        this.messages = [];
         this.renderMessages();
     }
 
@@ -1065,56 +1072,13 @@ class HackConvo {
         this.playSound('send');
         this.updateMessagesToday();
 
-        // Send via WebSocket
-        this.sendWebSocketMessage({
-            type: 'message',
-            ...message
-        });
+        // Send via Firebase (real-time cross-network messaging)
+        this.sendFirebaseMessage(message);
 
-        // Simulate responses in demo mode only if not connected
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            setTimeout(() => {
-                this.simulateResponse();
-            }, 1000 + Math.random() * 2000);
-        }
+        // No more simulations - this is real messaging!
     }
 
-    simulateResponse() {
-        const responses = [
-            "That's interesting! Tell me more.",
-            "I agree with that point.",
-            "Great question! Let me think about it.",
-            "Thanks for sharing that information.",
-            "I have a different perspective on this.",
-            "Can you elaborate on that?",
-            "That's a good point to consider.",
-            "I've experienced something similar.",
-            "Interesting take on the topic!",
-            "Nice! What technologies are you using?",
-            "That sounds like a challenging project.",
-            "Have you considered using a different approach?",
-            "I'd love to hear more about your experience with that.",
-            "That's a great insight!",
-            "What's your next step with this?"
-        ];
-
-        const authors = ['TechGuru', 'DevExpert', 'CyberSage', 'CodeNinja', 'DigitalWizard'];
-        const author = authors[Math.floor(Math.random() * authors.length)];
-        
-        const response = {
-            id: this.generateId(),
-            author: author,
-            avatar: `https://ui-avatars.com/api/?name=${author}&background=${this.getRandomColor()}&color=fff`,
-            text: responses[Math.floor(Math.random() * responses.length)],
-            timestamp: Date.now(),
-            own: false
-        };
-
-        this.messages.push(response);
-        this.renderMessages();
-        this.playSound('receive');
-        this.updateMessagesToday();
-    }
+    // simulateResponse function removed - no more fake messages!
 
     getRandomColor() {
         const colors = ['007bff', '28a745', 'dc3545', 'ffc107', '17a2b8', '6f42c1', 'fd7e14'];
@@ -1142,11 +1106,17 @@ class HackConvo {
         
         // Only send typing indicator if enough time has passed
         if (now - this.lastTypingTime > 1000) {
-            this.sendWebSocketMessage({
+            const typingData = {
                 type: 'typing',
                 author: this.currentUser.username,
                 timestamp: now
-            });
+            };
+            
+            // Send typing indicator via Firebase
+            if (this.push && this.messagesRef) {
+                this.push(this.ref(this.database, 'typing'), typingData);
+            }
+            
             this.lastTypingTime = now;
         }
         
