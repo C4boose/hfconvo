@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HackConvo Test - Cross-Tab Messaging</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #fff;
+        }
+        .test-section {
+            background: #2a2a2a;
+            padding: 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+        }
+        .message {
+            background: #333;
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            border-left: 4px solid #007bff;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .status.connected {
+            background: #28a745;
+        }
+        .status.disconnected {
+            background: #dc3545;
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        input {
+            background: #333;
+            color: white;
+            border: 1px solid #555;
+            padding: 10px;
+            border-radius: 4px;
+            width: 300px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🧪 HackConvo Cross-Tab Messaging Tests</h1>
+    
+    <div class="test-section">
+        <h2>📡 Connection Status</h2>
+        <div id="connection-status" class="status disconnected">Disconnected</div>
+        <p>This shows whether the app can communicate between browser tabs.</p>
+    </div>
+
+    <div class="test-section">
+        <h2>💬 Send Test Message</h2>
+        <input type="text" id="test-message" placeholder="Type a test message...">
+        <button onclick="sendTestMessage()">Send Message</button>
+        <p>Send a message and check if it appears in other tabs of this chat.</p>
+    </div>
+
+    <div class="test-section">
+        <h2>📨 Received Messages</h2>
+        <div id="messages"></div>
+    </div>
+
+    <div class="test-section">
+        <h2>🔧 Instructions</h2>
+        <ol>
+            <li>Open this page in multiple browser tabs</li>
+            <li>Check that the connection status shows "Connected"</li>
+            <li>Send a message in one tab</li>
+            <li>Watch for the message to appear in other tabs</li>
+            <li>If it works, your cross-tab messaging is working!</li>
+        </ol>
+    </div>
+
+    <div class="test-section">
+        <h2>🚀 Next Steps</h2>
+        <p>If cross-tab messaging works, you can:</p>
+        <ul>
+            <li>Open the main chat app in multiple tabs</li>
+            <li>Send messages between tabs</li>
+            <li>See typing indicators across tabs</li>
+            <li>For cross-device messaging, follow the setup in README.md</li>
+        </ul>
+    </div>
+
+    <script>
+        let broadcastChannel;
+        let isConnected = false;
+
+        // Initialize BroadcastChannel
+        function initBroadcastChannel() {
+            if (typeof BroadcastChannel !== 'undefined') {
+                broadcastChannel = new BroadcastChannel('hackconvo-chat');
+                broadcastChannel.onmessage = handleMessage;
+                updateConnectionStatus(true);
+                console.log('BroadcastChannel initialized');
+            } else {
+                updateConnectionStatus(false);
+                console.log('BroadcastChannel not supported');
+            }
+        }
+
+        function handleMessage(event) {
+            const data = event.data;
+            if (data.type === 'message') {
+                addMessage(data);
+            }
+        }
+
+        function sendTestMessage() {
+            const input = document.getElementById('test-message');
+            const text = input.value.trim();
+            
+            if (!text) return;
+
+            const message = {
+                type: 'message',
+                author: 'TestUser',
+                text: text,
+                timestamp: Date.now()
+            };
+
+            // Send via BroadcastChannel
+            if (broadcastChannel) {
+                broadcastChannel.postMessage(message);
+            }
+
+            // Also add to local display
+            addMessage(message);
+            
+            input.value = '';
+        }
+
+        function addMessage(data) {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = 'message';
+            messageDiv.innerHTML = `
+                <strong>${data.author}:</strong> ${data.text}
+                <br><small>${new Date(data.timestamp).toLocaleTimeString()}</small>
+            `;
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+
+        function updateConnectionStatus(connected) {
+            const statusDiv = document.getElementById('connection-status');
+            isConnected = connected;
+            
+            if (connected) {
+                statusDiv.textContent = 'Connected - Cross-tab messaging enabled';
+                statusDiv.className = 'status connected';
+            } else {
+                statusDiv.textContent = 'Disconnected - Cross-tab messaging disabled';
+                statusDiv.className = 'status disconnected';
+            }
+        }
+
+        // Initialize when page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            initBroadcastChannel();
+            
+            // Handle Enter key in input
+            document.getElementById('test-message').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    sendTestMessage();
+                }
+            });
+        });
+    </script>
+</body>
+</html> 
