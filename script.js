@@ -79,6 +79,8 @@ class HackConvo {
             this.push = window.firebasePush;
             this.onValue = window.firebaseOnValue;
             this.off = window.firebaseOff;
+            this.remove = window.firebaseRemove;
+            this.child = window.firebaseChild;
             
             console.log('Firebase connected');
             this.updateConnectionStatus(true);
@@ -106,11 +108,48 @@ class HackConvo {
             // Add current user to online users
             this.addUserToFirebase();
             
+            // Start periodic cleanup of old messages
+            this.startPeriodicCleanup();
+            
         } catch (error) {
             console.error('Failed to connect to Firebase:', error);
             this.updateConnectionStatus(false);
             this.enableSimulatedMode();
         }
+    }
+
+    startPeriodicCleanup() {
+        // Clean up old messages based on config
+        const cleanupInterval = window.HACKCONVO_CONFIG?.CLEANUP_INTERVAL_MINUTES || 60;
+        setInterval(() => {
+            if (this.messagesRef) {
+                this.performPeriodicCleanup();
+            }
+        }, cleanupInterval * 60 * 1000); // Based on config
+    }
+
+    performPeriodicCleanup() {
+        const retentionHours = window.HACKCONVO_CONFIG?.MESSAGE_RETENTION_HOURS || 4;
+        const cutoffTime = Date.now() - (retentionHours * 60 * 60 * 1000);
+        
+        this.onValue(this.messagesRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                const messages = Object.values(data);
+                const oldMessages = messages.filter(message => message.timestamp < cutoffTime);
+                
+                if (oldMessages.length > 0 && this.remove && this.child) {
+                    console.log(`Periodic cleanup: removing ${oldMessages.length} old messages`);
+                    
+                    oldMessages.forEach(message => {
+                        if (message.key) {
+                            const messageRef = this.child(this.messagesRef, message.key);
+                            this.remove(messageRef);
+                        }
+                    });
+                }
+            }
+        }, { onlyOnce: true });
     }
 
     handleWebSocketMessage(data) {
@@ -179,14 +218,19 @@ class HackConvo {
         // Convert Firebase object to array and sort by timestamp
         const messages = Object.values(data).sort((a, b) => a.timestamp - b.timestamp);
         
+        // Filter out messages older than configured retention time
+        const retentionHours = window.HACKCONVO_CONFIG?.MESSAGE_RETENTION_HOURS || 4;
+        const cutoffTime = Date.now() - (retentionHours * 60 * 60 * 1000);
+        const recentMessages = messages.filter(message => message.timestamp > cutoffTime);
+        
         // Only process new messages
         const lastMessageId = localStorage.getItem('lastFirebaseMessageId');
-        let newMessages = messages;
+        let newMessages = recentMessages;
         
         if (lastMessageId) {
-            const lastMessageIndex = messages.findIndex(m => m.id === lastMessageId);
+            const lastMessageIndex = recentMessages.findIndex(m => m.id === lastMessageId);
             if (lastMessageIndex !== -1) {
-                newMessages = messages.slice(lastMessageIndex + 1);
+                newMessages = recentMessages.slice(lastMessageIndex + 1);
             }
         }
         
@@ -198,8 +242,40 @@ class HackConvo {
         });
         
         // Store last message ID
-        if (messages.length > 0) {
-            localStorage.setItem('lastFirebaseMessageId', messages[messages.length - 1].id);
+        if (recentMessages.length > 0) {
+            localStorage.setItem('lastFirebaseMessageId', recentMessages[recentMessages.length - 1].id);
+        }
+        
+        // Clean up old messages from Firebase
+        this.cleanupOldMessages(messages, cutoffTime);
+    }
+
+    cleanupOldMessages(allMessages, cutoffTime) {
+        // Only run cleanup every 5 minutes to avoid excessive operations
+        const lastCleanup = localStorage.getItem('lastCleanupTime');
+        const now = Date.now();
+        
+        const throttleMinutes = window.HACKCONVO_CONFIG?.CLEANUP_THROTTLE_MINUTES || 5;
+        if (lastCleanup && (now - parseInt(lastCleanup)) < throttleMinutes * 60 * 1000) {
+            return; // Skip cleanup if it was done recently
+        }
+        
+        // Find old messages to remove
+        const oldMessages = allMessages.filter(message => message.timestamp < cutoffTime);
+        
+        if (oldMessages.length > 0 && this.remove && this.child) {
+            console.log(`Cleaning up ${oldMessages.length} old messages`);
+            
+            // Remove old messages from Firebase
+            oldMessages.forEach(message => {
+                if (message.key) { // Firebase provides a 'key' property for each message
+                    const messageRef = this.child(this.messagesRef, message.key);
+                    this.remove(messageRef);
+                }
+            });
+            
+            // Update last cleanup time
+            localStorage.setItem('lastCleanupTime', now.toString());
         }
     }
 
@@ -994,6 +1070,40 @@ class HackConvo {
         // Start with empty messages - real messages will come from Firebase
         this.messages = [];
         this.renderMessages();
+        
+        // Load recent messages from Firebase when connection is established
+        setTimeout(() => {
+            if (this.messagesRef) {
+                this.loadRecentMessages();
+            }
+        }, 2000);
+    }
+
+    loadRecentMessages() {
+        // Load messages from the last configured retention time
+        const retentionHours = window.HACKCONVO_CONFIG?.MESSAGE_RETENTION_HOURS || 4;
+        const cutoffTime = Date.now() - (retentionHours * 60 * 60 * 1000);
+        
+        this.onValue(this.messagesRef, (snapshot) => {
+            const data = snapshot.val();
+            if (data) {
+                const messages = Object.values(data).sort((a, b) => a.timestamp - b.timestamp);
+                const recentMessages = messages.filter(message => message.timestamp > cutoffTime);
+                
+                // Only load messages we haven't seen yet
+                const existingIds = this.messages.map(m => m.id);
+                const newMessages = recentMessages.filter(message => !existingIds.includes(message.id));
+                
+                newMessages.forEach(message => {
+                    this.messages.push({
+                        ...message,
+                        own: message.author === this.currentUser.username
+                    });
+                });
+                
+                this.renderMessages();
+            }
+        }, { onlyOnce: true }); // Only load once, not continuously
     }
 
     renderMessages() {
