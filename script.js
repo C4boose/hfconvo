@@ -1,11 +1,11 @@
-// HackConvo - Public Chat Application JavaScript
+// HackConvo - Real-time Public Chat Application JavaScript
 class HackConvo {
     constructor() {
         this.currentUser = this.loadUser();
         this.messages = [];
-        this.onlineUsers = new Set();
+        this.onlineUsers = new Map();
         this.activeStreams = new Map();
-        this.typingUsers = new Set();
+        this.typingUsers = new Map();
         this.sounds = {
             enabled: localStorage.getItem('soundEnabled') !== 'false'
         };
@@ -20,6 +20,15 @@ class HackConvo {
             }
         };
         
+        // WebSocket connection
+        this.ws = null;
+        this.reconnectAttempts = 0;
+        this.maxReconnectAttempts = 5;
+        this.reconnectDelay = 1000;
+        this.heartbeatInterval = null;
+        this.typingTimeout = null;
+        this.lastTypingTime = 0;
+        
         this.init();
     }
 
@@ -28,16 +37,245 @@ class HackConvo {
         this.setupMediaControls();
         this.setupHeaderControls();
         this.loadMessages();
-        this.loadOnlineUsers();
-        this.updateOnlineCount();
-        this.updateHeaderStats();
-        this.startHeartbeat();
-        this.setupTypingIndicator();
         this.initUserProfile();
+        this.connectWebSocket();
+        this.setupTypingIndicator();
         
         // Load saved theme
         const savedTheme = localStorage.getItem('theme') || 'dark';
         this.setTheme(savedTheme);
+    }
+
+    connectWebSocket() {
+        try {
+            // Use a public WebSocket server for demo purposes
+            // In production, you'd use your own WebSocket server
+            const wsUrl = 'wss://echo.websocket.org/';
+            this.ws = new WebSocket(wsUrl);
+            
+            this.ws.onopen = () => {
+                console.log('WebSocket connected');
+                this.updateConnectionStatus(true);
+                this.reconnectAttempts = 0;
+                this.startHeartbeat();
+                
+                // Send user join message
+                this.sendWebSocketMessage({
+                    type: 'join',
+                    user: this.currentUser
+                });
+            };
+            
+            this.ws.onmessage = (event) => {
+                try {
+                    const data = JSON.parse(event.data);
+                    this.handleWebSocketMessage(data);
+                } catch (e) {
+                    // Echo server sends back the same message, so we can simulate real chat
+                    this.handleEchoMessage(event.data);
+                }
+            };
+            
+            this.ws.onclose = () => {
+                console.log('WebSocket disconnected');
+                this.updateConnectionStatus(false);
+                this.stopHeartbeat();
+                this.scheduleReconnect();
+            };
+            
+            this.ws.onerror = (error) => {
+                console.error('WebSocket error:', error);
+                this.updateConnectionStatus(false);
+            };
+            
+        } catch (error) {
+            console.error('Failed to connect WebSocket:', error);
+            this.updateConnectionStatus(false);
+            // Fallback to simulated mode
+            this.enableSimulatedMode();
+        }
+    }
+
+    handleWebSocketMessage(data) {
+        switch (data.type) {
+            case 'message':
+                this.handleIncomingMessage(data);
+                break;
+            case 'typing':
+                this.handleTypingIndicator(data);
+                break;
+            case 'user_join':
+                this.handleUserJoin(data);
+                break;
+            case 'user_leave':
+                this.handleUserLeave(data);
+                break;
+            case 'online_users':
+                this.handleOnlineUsers(data);
+                break;
+            case 'pong':
+                // Heartbeat response
+                break;
+            default:
+                console.log('Unknown message type:', data.type);
+        }
+    }
+
+    handleEchoMessage(data) {
+        // Since we're using echo server, we need to filter out our own messages
+        try {
+            const parsed = JSON.parse(data);
+            if (parsed.type === 'message') {
+                // Only handle messages from other users
+                if (parsed.author !== this.currentUser.username) {
+                    this.handleIncomingMessage(parsed);
+                }
+                // For our own messages, just clear typing indicator
+                else {
+                    this.typingUsers.delete(parsed.author);
+                    this.updateTypingIndicator();
+                }
+            }
+        } catch (e) {
+            // Not JSON, ignore
+        }
+    }
+
+    sendWebSocketMessage(data) {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify(data));
+        }
+    }
+
+    handleIncomingMessage(data) {
+        // Don't add our own messages again (they're already displayed)
+        if (data.author === this.currentUser.username) {
+            return;
+        }
+
+        const message = {
+            id: data.id || this.generateId(),
+            author: data.author,
+            avatar: data.avatar,
+            text: data.text,
+            timestamp: data.timestamp || Date.now(),
+            own: false
+        };
+
+        this.messages.push(message);
+        this.renderMessages();
+        this.playSound('receive');
+        this.updateMessagesToday();
+        
+        // Clear typing indicator for this user
+        this.typingUsers.delete(data.author);
+        this.updateTypingIndicator();
+    }
+
+    handleTypingIndicator(data) {
+        if (data.author !== this.currentUser.username) {
+            this.typingUsers.set(data.author, Date.now());
+            this.updateTypingIndicator();
+            
+            // Clear typing indicator after 3 seconds
+            setTimeout(() => {
+                this.typingUsers.delete(data.author);
+                this.updateTypingIndicator();
+            }, 3000);
+        }
+    }
+
+    handleUserJoin(data) {
+        this.onlineUsers.set(data.user.username, data.user);
+        this.updateOnlineUsers();
+        this.updateOnlineCount();
+        
+        if (data.user.username !== this.currentUser.username) {
+            this.showNotification(`${data.user.username} joined the chat`, 'info');
+        }
+    }
+
+    handleUserLeave(data) {
+        this.onlineUsers.delete(data.username);
+        this.typingUsers.delete(data.username);
+        this.updateOnlineUsers();
+        this.updateOnlineCount();
+        this.updateTypingIndicator();
+        
+        if (data.username !== this.currentUser.username) {
+            this.showNotification(`${data.username} left the chat`, 'info');
+        }
+    }
+
+    handleOnlineUsers(data) {
+        this.onlineUsers.clear();
+        data.users.forEach(user => {
+            this.onlineUsers.set(user.username, user);
+        });
+        this.updateOnlineUsers();
+        this.updateOnlineCount();
+    }
+
+    updateConnectionStatus(connected) {
+        const statusDot = document.getElementById('status-dot');
+        const statusText = document.getElementById('status-text');
+        const connectionIcon = document.getElementById('connection-icon');
+        const latency = document.getElementById('latency');
+        
+        if (connected) {
+            statusDot.style.color = 'var(--online-color)';
+            statusText.textContent = 'Connected';
+            connectionIcon.className = 'fas fa-wifi';
+            latency.textContent = '12ms';
+        } else {
+            statusDot.style.color = 'var(--offline-color)';
+            statusText.textContent = 'Disconnected';
+            connectionIcon.className = 'fas fa-wifi text-danger';
+            latency.textContent = '--';
+        }
+    }
+
+    scheduleReconnect() {
+        if (this.reconnectAttempts < this.maxReconnectAttempts) {
+            this.reconnectAttempts++;
+            const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1);
+            
+            this.showNotification(`Reconnecting in ${delay/1000}s... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`, 'warning');
+            
+            setTimeout(() => {
+                this.connectWebSocket();
+            }, delay);
+        } else {
+            this.showNotification('Connection failed. Using offline mode.', 'error');
+            this.enableSimulatedMode();
+        }
+    }
+
+    enableSimulatedMode() {
+        this.showNotification('Running in simulated mode', 'warning');
+        this.updateConnectionStatus(false);
+        
+        // Enable simulated responses
+        setInterval(() => {
+            if (Math.random() < 0.3) { // 30% chance every 10 seconds
+                this.simulateResponse();
+            }
+        }, 10000);
+    }
+
+    startHeartbeat() {
+        this.heartbeatInterval = setInterval(() => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.sendWebSocketMessage({ type: 'ping' });
+            }
+        }, 30000); // Send heartbeat every 30 seconds
+    }
+
+    stopHeartbeat() {
+        if (this.heartbeatInterval) {
+            clearInterval(this.heartbeatInterval);
+            this.heartbeatInterval = null;
+        }
     }
 
     setupEventListeners() {
@@ -61,6 +299,7 @@ class HackConvo {
             if (e.key === 'Escape') {
                 messageInput.value = '';
                 this.updateCharCount();
+                this.clearTyping();
             }
             
             // Ctrl+K to focus search
@@ -167,7 +406,11 @@ class HackConvo {
         // Remove after 3 seconds
         setTimeout(() => {
             toast.classList.remove('show');
-            setTimeout(() => document.body.removeChild(toast), 300);
+            setTimeout(() => {
+                if (document.body.contains(toast)) {
+                    document.body.removeChild(toast);
+                }
+            }, 300);
         }, 3000);
     }
 
@@ -184,6 +427,14 @@ class HackConvo {
             
             // Close user menu
             this.closeUserMenu();
+            
+            // Notify server of username change
+            this.sendWebSocketMessage({
+                type: 'username_change',
+                oldUsername: this.currentUser.username,
+                newUsername: newUsername,
+                user: this.currentUser
+            });
             
             this.showNotification(`Username changed to ${newUsername}`, 'success');
         }
@@ -213,10 +464,6 @@ class HackConvo {
 
     saveUser(user) {
         localStorage.setItem('hackconvo_user', JSON.stringify(user));
-        
-        // Update UI
-        document.getElementById('user-avatar').src = user.avatar;
-        document.getElementById('user-avatar').alt = user.username;
     }
 
     generateId() {
@@ -224,7 +471,7 @@ class HackConvo {
     }
 
     setupHeaderControls() {
-        // Notification button
+        // Notifications button
         document.getElementById('notifications-btn').addEventListener('click', () => {
             this.toggleNotifications();
         });
@@ -239,183 +486,126 @@ class HackConvo {
             this.openSettingsModal();
         });
 
-        // User avatar click for menu
-        document.getElementById('user-avatar-container').addEventListener('click', (e) => {
-            e.stopPropagation();
+        // User avatar click
+        document.getElementById('user-avatar-container').addEventListener('click', () => {
             this.toggleUserMenu();
         });
 
         // Close user menu when clicking outside
-        document.addEventListener('click', () => {
-            this.closeUserMenu();
+        document.addEventListener('click', (e) => {
+            if (!e.target.closest('#user-avatar-container')) {
+                this.closeUserMenu();
+            }
         });
-
-        // Server status updates
-        this.updateServerStatus();
-        setInterval(() => this.updateServerStatus(), 5000);
     }
 
     initUserProfile() {
-        const usernameEl = document.getElementById('header-username');
-        const avatarEl = document.getElementById('user-avatar');
-        const soundIcon = document.getElementById('sound-icon');
-        
-        usernameEl.textContent = this.currentUser.username;
-        avatarEl.src = this.currentUser.avatar;
-        
-        // Update sound icon based on current state
-        soundIcon.className = this.sounds.enabled ? 'fas fa-volume-up' : 'fas fa-volume-mute';
+        document.getElementById('header-username').textContent = this.currentUser.username;
+        document.getElementById('user-avatar').src = this.currentUser.avatar;
+        document.getElementById('user-status-text').textContent = 'Online';
     }
 
     toggleNotifications() {
+        // Toggle notification badge
         const badge = document.getElementById('notification-badge');
         const isVisible = badge.style.display !== 'none';
         
         if (isVisible) {
             badge.style.display = 'none';
-            this.showNotification('Notifications cleared', 'info');
+            this.showNotification('Notifications disabled', 'warning');
         } else {
-            // Simulate new notifications
-            const count = Math.floor(Math.random() * 5) + 1;
-            badge.textContent = count;
             badge.style.display = 'block';
-            this.showNotification(`${count} new notifications`, 'info');
+            badge.textContent = '3';
+            this.showNotification('Notifications enabled', 'success');
         }
     }
 
     toggleFullscreen() {
         if (!document.fullscreenElement) {
-            document.documentElement.requestFullscreen().then(() => {
-                const btn = document.getElementById('fullscreen-btn');
-                btn.innerHTML = '<i class="fas fa-compress"></i>';
-                btn.title = 'Exit Fullscreen';
-                this.showNotification('Entered fullscreen mode', 'success');
+            document.documentElement.requestFullscreen().catch(err => {
+                console.log('Error attempting to enable fullscreen:', err);
             });
         } else {
-            document.exitFullscreen().then(() => {
-                const btn = document.getElementById('fullscreen-btn');
-                btn.innerHTML = '<i class="fas fa-expand"></i>';
-                btn.title = 'Toggle Fullscreen';
-                this.showNotification('Exited fullscreen mode', 'info');
-            });
+            document.exitFullscreen();
         }
     }
 
     toggleUserMenu() {
         const menu = document.getElementById('user-menu');
-        const isVisible = menu.style.display !== 'none';
-        menu.style.display = isVisible ? 'none' : 'block';
+        menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
     }
 
     closeUserMenu() {
-        const menu = document.getElementById('user-menu');
-        menu.style.display = 'none';
+        document.getElementById('user-menu').style.display = 'none';
     }
 
     updateServerStatus() {
         const statusDot = document.getElementById('status-dot');
         const statusText = document.getElementById('status-text');
         const connectionIcon = document.getElementById('connection-icon');
-        const latencyEl = document.getElementById('latency');
+        const latency = document.getElementById('latency');
         
         // Simulate connection quality
-        const quality = Math.random();
-        let latency, status, color, iconClass;
+        const qualities = [
+            { icon: 'fas fa-wifi', latency: '8ms', color: 'var(--online-color)' },
+            { icon: 'fas fa-wifi', latency: '12ms', color: 'var(--online-color)' },
+            { icon: 'fas fa-wifi', latency: '18ms', color: 'var(--accent-secondary)' },
+            { icon: 'fas fa-wifi', latency: '25ms', color: 'var(--text-muted)' }
+        ];
         
-        if (quality > 0.8) {
-            latency = Math.floor(Math.random() * 20) + 5; // 5-25ms
-            status = 'Connected';
-            color = 'var(--online-color)';
-            iconClass = 'fas fa-wifi';
-        } else if (quality > 0.5) {
-            latency = Math.floor(Math.random() * 50) + 25; // 25-75ms
-            status = 'Good';
-            color = '#ffc107';
-            iconClass = 'fas fa-wifi';
-        } else if (quality > 0.2) {
-            latency = Math.floor(Math.random() * 100) + 75; // 75-175ms
-            status = 'Slow';
-            color = '#fd7e14';
-            iconClass = 'fas fa-wifi';
-        } else {
-            latency = Math.floor(Math.random() * 200) + 200; // 200-400ms
-            status = 'Poor';
-            color = '#dc3545';
-            iconClass = 'fas fa-wifi';
-        }
+        const quality = qualities[Math.floor(Math.random() * qualities.length)];
         
-        statusDot.style.color = color;
-        statusText.textContent = status;
-        statusText.style.color = color;
-        connectionIcon.className = iconClass;
-        connectionIcon.style.color = color;
-        latencyEl.textContent = `${latency}ms`;
-        latencyEl.style.color = color;
+        statusDot.style.color = quality.color;
+        connectionIcon.className = quality.icon;
+        latency.textContent = quality.latency;
+        
+        // Update every 10 seconds
+        setTimeout(() => this.updateServerStatus(), 10000);
     }
 
     updateHeaderStats() {
-        // Update all header statistics
-        this.updateOnlineCount();
         this.updateMessagesToday();
         this.updateActiveStreamsCount();
-        
-        // Update periodically
-        setTimeout(() => this.updateHeaderStats(), 30000);
+        this.updateOnlineCount();
     }
 
     updateMessagesToday() {
-        // Simulate message count (could be real in production)
-        const baseCount = 1247;
-        const variance = Math.floor(Math.random() * 50);
-        const count = baseCount + variance;
+        const today = new Date().toDateString();
+        const todayMessages = this.messages.filter(msg => 
+            new Date(msg.timestamp).toDateString() === today
+        ).length;
         
-        const messagesEl = document.getElementById('messages-today');
-        if (messagesEl) {
-            messagesEl.textContent = this.formatNumber(count);
-        }
+        document.getElementById('messages-today').textContent = this.formatNumber(todayMessages);
     }
 
     updateActiveStreamsCount() {
-        let streamCount = 0;
-        
-        // Count active media streams
-        if (this.webrtc.mediaDevices.screen) streamCount++;
-        if (this.webrtc.mediaDevices.video) streamCount++;
-        if (this.webrtc.mediaDevices.audio && !this.webrtc.mediaDevices.video) streamCount++;
-        
-        // Add some simulated streams
-        streamCount += Math.floor(Math.random() * 3);
-        
-        const streamsEl = document.getElementById('active-streams-count');
-        if (streamsEl) {
-            streamsEl.textContent = streamCount;
-        }
+        const count = this.activeStreams.size;
+        document.getElementById('active-streams-count').textContent = count;
     }
 
     formatNumber(num) {
-        if (num >= 1000) {
-            return (num / 1000).toFixed(1) + 'k';
-        }
+        if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+        if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
         return num.toString();
     }
 
     setupMediaControls() {
-        // Screen share button
+        // Screen share
         document.getElementById('screen-share-btn').addEventListener('click', () => {
             this.toggleScreenShare();
         });
 
-        // Voice call button
+        // Voice call
         document.getElementById('voice-call-btn').addEventListener('click', () => {
             this.toggleAudio();
         });
 
-        // Video call button
+        // Video call
         document.getElementById('video-call-btn').addEventListener('click', () => {
             this.toggleVideo();
         });
 
-        // Media control overlay buttons
+        // Media controls
         document.getElementById('mute-btn').addEventListener('click', () => {
             this.toggleMute();
         });
@@ -430,15 +620,10 @@ class HackConvo {
     }
 
     async toggleScreenShare() {
-        try {
-            if (this.webrtc.mediaDevices.screen) {
-                await this.stopScreenShare();
-            } else {
-                await this.startScreenShare();
-            }
-        } catch (error) {
-            console.error('Screen share error:', error);
-            this.showNotification('Screen share failed: ' + error.message, 'error');
+        if (this.webrtc.screen) {
+            await this.stopScreenShare();
+        } else {
+            await this.startScreenShare();
         }
     }
 
@@ -448,24 +633,23 @@ class HackConvo {
                 video: true,
                 audio: true
             });
-
+            
             this.webrtc.screenStream = stream;
-            this.webrtc.mediaDevices.screen = true;
+            this.webrtc.screen = true;
             
             this.addStreamToDisplay(stream, this.currentUser.username, 'screen');
-            this.updateActiveStreams();
             this.updateMediaButton('screen-share-btn', true);
             
-            // Listen for screen share end
-            stream.getVideoTracks()[0].addEventListener('ended', () => {
-                this.stopScreenShare();
-            });
-
-            this.playSound('notification');
             this.showNotification('Screen sharing started', 'success');
             
+            // Handle stream end
+            stream.getVideoTracks()[0].onended = () => {
+                this.stopScreenShare();
+            };
+            
         } catch (error) {
-            throw new Error('Failed to start screen sharing');
+            console.error('Error starting screen share:', error);
+            this.showNotification('Failed to start screen share', 'error');
         }
     }
 
@@ -473,95 +657,83 @@ class HackConvo {
         if (this.webrtc.screenStream) {
             this.webrtc.screenStream.getTracks().forEach(track => track.stop());
             this.webrtc.screenStream = null;
+            this.webrtc.screen = false;
+            
+            this.removeStreamFromDisplay(this.currentUser.username, 'screen');
+            this.updateMediaButton('screen-share-btn', false);
+            
+            this.showNotification('Screen sharing stopped', 'info');
         }
-        
-        this.webrtc.mediaDevices.screen = false;
-        this.removeStreamFromDisplay(this.currentUser.username, 'screen');
-        this.updateActiveStreams();
-        this.updateMediaButton('screen-share-btn', false);
-        
-        this.showNotification('Screen sharing stopped', 'info');
     }
 
     async toggleAudio() {
-        try {
-            if (this.webrtc.mediaDevices.audio) {
-                await this.stopAudio();
-            } else {
-                await this.startAudio();
-            }
-        } catch (error) {
-            console.error('Audio error:', error);
-            this.showNotification('Audio failed: ' + error.message, 'error');
+        if (this.webrtc.mediaDevices.audio) {
+            await this.stopAudio();
+        } else {
+            await this.startAudio();
         }
     }
 
     async startAudio() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: false
+            });
             
-            if (!this.webrtc.localStream) {
-                this.webrtc.localStream = stream;
-            } else {
-                // Add audio track to existing stream
-                const audioTrack = stream.getAudioTracks()[0];
-                this.webrtc.localStream.addTrack(audioTrack);
-            }
-            
+            this.webrtc.localStream = stream;
             this.webrtc.mediaDevices.audio = true;
-            this.updateActiveStreams();
+            
+            this.addStreamToDisplay(stream, this.currentUser.username, 'audio');
             this.updateMediaButton('voice-call-btn', true);
             
-            this.playSound('notification');
             this.showNotification('Voice chat started', 'success');
             
         } catch (error) {
-            throw new Error('Failed to start audio');
+            console.error('Error starting audio:', error);
+            this.showNotification('Failed to start voice chat', 'error');
         }
     }
 
     async stopAudio() {
         if (this.webrtc.localStream) {
             this.webrtc.localStream.getAudioTracks().forEach(track => track.stop());
+            this.webrtc.localStream = null;
+            this.webrtc.mediaDevices.audio = false;
+            
+            this.removeStreamFromDisplay(this.currentUser.username, 'audio');
+            this.updateMediaButton('voice-call-btn', false);
+            
+            this.showNotification('Voice chat stopped', 'info');
         }
-        
-        this.webrtc.mediaDevices.audio = false;
-        this.updateActiveStreams();
-        this.updateMediaButton('voice-call-btn', false);
-        
-        this.showNotification('Voice chat stopped', 'info');
     }
 
     async toggleVideo() {
-        try {
-            if (this.webrtc.mediaDevices.video) {
-                await this.stopVideo();
-            } else {
-                await this.startVideo();
-            }
-        } catch (error) {
-            console.error('Video error:', error);
-            this.showNotification('Video failed: ' + error.message, 'error');
+        if (this.webrtc.mediaDevices.video) {
+            await this.stopVideo();
+        } else {
+            await this.startVideo();
         }
     }
 
     async startVideo() {
         try {
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: true
+            });
             
             this.webrtc.localStream = stream;
             this.webrtc.mediaDevices.video = true;
-            this.webrtc.mediaDevices.audio = true;
             
             this.addStreamToDisplay(stream, this.currentUser.username, 'video');
-            this.updateActiveStreams();
             this.updateMediaButton('video-call-btn', true);
             
-            this.playSound('notification');
             this.showNotification('Video chat started', 'success');
             
         } catch (error) {
-            throw new Error('Failed to start video');
+            console.error('Error starting video:', error);
+            this.showNotification('Failed to start video chat', 'error');
         }
     }
 
@@ -569,52 +741,58 @@ class HackConvo {
         if (this.webrtc.localStream) {
             this.webrtc.localStream.getTracks().forEach(track => track.stop());
             this.webrtc.localStream = null;
+            this.webrtc.mediaDevices.video = false;
+            
+            this.removeStreamFromDisplay(this.currentUser.username, 'video');
+            this.updateMediaButton('video-call-btn', false);
+            
+            this.showNotification('Video chat stopped', 'info');
         }
-        
-        this.webrtc.mediaDevices.video = false;
-        this.webrtc.mediaDevices.audio = false;
-        this.removeStreamFromDisplay(this.currentUser.username, 'video');
-        this.updateActiveStreams();
-        this.updateMediaButton('video-call-btn', false);
-        
-        this.showNotification('Video chat stopped', 'info');
     }
 
     toggleMute() {
         if (this.webrtc.localStream) {
-            const audioTracks = this.webrtc.localStream.getAudioTracks();
-            const muted = !audioTracks[0].enabled;
-            audioTracks.forEach(track => track.enabled = muted);
-            
-            const muteBtn = document.getElementById('mute-btn');
-            muteBtn.classList.toggle('active', !muted);
-            muteBtn.innerHTML = muted ? '<i class="fas fa-microphone"></i>' : '<i class="fas fa-microphone-slash"></i>';
-            
-            this.showNotification(muted ? 'Unmuted' : 'Muted', 'info');
+            const audioTrack = this.webrtc.localStream.getAudioTracks()[0];
+            if (audioTrack) {
+                audioTrack.enabled = !audioTrack.enabled;
+                const muteBtn = document.getElementById('mute-btn');
+                muteBtn.innerHTML = audioTrack.enabled ? 
+                    '<i class="fas fa-microphone"></i>' : 
+                    '<i class="fas fa-microphone-slash"></i>';
+                
+                this.showNotification(
+                    audioTrack.enabled ? 'Microphone unmuted' : 'Microphone muted', 
+                    'info'
+                );
+            }
         }
     }
 
     toggleCamera() {
         if (this.webrtc.localStream) {
-            const videoTracks = this.webrtc.localStream.getVideoTracks();
-            const enabled = !videoTracks[0].enabled;
-            videoTracks.forEach(track => track.enabled = enabled);
-            
-            const cameraBtn = document.getElementById('camera-btn');
-            cameraBtn.classList.toggle('active', enabled);
-            cameraBtn.innerHTML = enabled ? '<i class="fas fa-video"></i>' : '<i class="fas fa-video-slash"></i>';
-            
-            this.showNotification(enabled ? 'Camera on' : 'Camera off', 'info');
+            const videoTrack = this.webrtc.localStream.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.enabled = !videoTrack.enabled;
+                const cameraBtn = document.getElementById('camera-btn');
+                cameraBtn.innerHTML = videoTrack.enabled ? 
+                    '<i class="fas fa-video"></i>' : 
+                    '<i class="fas fa-video-slash"></i>';
+                
+                this.showNotification(
+                    videoTrack.enabled ? 'Camera enabled' : 'Camera disabled', 
+                    'info'
+                );
+            }
         }
     }
 
     endAllCalls() {
         this.stopScreenShare();
-        this.stopVideo();
         this.stopAudio();
+        this.stopVideo();
         
-        const mediaDisplay = document.getElementById('media-display');
-        mediaDisplay.style.display = 'none';
+        // Hide media display
+        document.getElementById('media-display').style.display = 'none';
         
         this.showNotification('All calls ended', 'info');
     }
@@ -623,315 +801,211 @@ class HackConvo {
         const mediaDisplay = document.getElementById('media-display');
         const mediaGrid = document.getElementById('media-grid');
         
+        // Show media display
         mediaDisplay.style.display = 'block';
         
+        // Create stream element
         const streamElement = document.createElement('div');
         streamElement.className = 'media-stream';
         streamElement.id = `stream-${username}-${type}`;
         
-        if (type === 'screen' || type === 'video') {
-            const video = document.createElement('video');
-            video.srcObject = stream;
-            video.autoplay = true;
-            video.muted = type === 'video' && username === this.currentUser.username; // Mute own video
-            streamElement.appendChild(video);
-        }
+        const video = document.createElement('video');
+        video.autoplay = true;
+        video.muted = type === 'audio' || type === 'screen';
+        video.srcObject = stream;
         
         const streamInfo = document.createElement('div');
         streamInfo.className = 'stream-info';
-        streamInfo.innerHTML = `${username} - ${type === 'screen' ? 'Screen Share' : type === 'video' ? 'Video Call' : 'Audio Call'}`;
-        streamElement.appendChild(streamInfo);
+        streamInfo.textContent = `${username} - ${type}`;
         
+        streamElement.appendChild(video);
+        streamElement.appendChild(streamInfo);
         mediaGrid.appendChild(streamElement);
+        
+        // Store stream reference
+        this.activeStreams.set(`${username}-${type}`, streamElement);
+        
+        this.updateActiveStreams();
     }
 
     removeStreamFromDisplay(username, type) {
-        const streamElement = document.getElementById(`stream-${username}-${type}`);
+        const streamId = `${username}-${type}`;
+        const streamElement = document.getElementById(`stream-${streamId}`);
+        
         if (streamElement) {
             streamElement.remove();
+            this.activeStreams.delete(streamId);
         }
         
+        this.updateActiveStreams();
+        
         // Hide media display if no streams
-        const mediaGrid = document.getElementById('media-grid');
-        if (mediaGrid.children.length === 0) {
+        if (this.activeStreams.size === 0) {
             document.getElementById('media-display').style.display = 'none';
         }
     }
 
     updateMediaButton(buttonId, active) {
         const button = document.getElementById(buttonId);
-        button.classList.toggle('active', active);
+        if (active) {
+            button.classList.add('active');
+        } else {
+            button.classList.remove('active');
+        }
     }
 
     updateActiveStreams() {
         const streamsList = document.getElementById('active-streams-list');
-        const streams = [];
+        const noStreams = streamsList.querySelector('.no-streams');
         
-        if (this.webrtc.mediaDevices.screen) {
-            streams.push({
-                user: this.currentUser.username,
-                type: 'Screen Share',
-                icon: 'fas fa-desktop'
-            });
-        }
-        
-        if (this.webrtc.mediaDevices.video) {
-            streams.push({
-                user: this.currentUser.username,
-                type: 'Video Call',
-                icon: 'fas fa-video'
-            });
-        }
-        
-        if (this.webrtc.mediaDevices.audio && !this.webrtc.mediaDevices.video) {
-            streams.push({
-                user: this.currentUser.username,
-                type: 'Voice Call',
-                icon: 'fas fa-microphone'
-            });
-        }
-        
-        if (streams.length === 0) {
-            streamsList.innerHTML = '<div class="no-streams">No active streams</div>';
+        if (this.activeStreams.size === 0) {
+            if (!noStreams) {
+                streamsList.innerHTML = '<div class="no-streams">No active streams</div>';
+            }
         } else {
-            streamsList.innerHTML = streams.map(stream => `
-                <div class="stream-item">
-                    <div class="stream-user">${stream.user}</div>
+            if (noStreams) {
+                noStreams.remove();
+            }
+            
+            // Update streams list
+            streamsList.innerHTML = '';
+            this.activeStreams.forEach((element, key) => {
+                const [username, type] = key.split('-');
+                const streamItem = document.createElement('div');
+                streamItem.className = 'stream-item';
+                streamItem.innerHTML = `
+                    <div class="stream-user">${username}</div>
                     <div class="stream-type">
-                        <i class="${stream.icon}"></i> ${stream.type}
+                        <i class="fas fa-${type === 'video' ? 'video' : type === 'audio' ? 'microphone' : 'desktop'}"></i>
+                        ${type} stream
                     </div>
-                </div>
-            `).join('');
+                `;
+                streamsList.appendChild(streamItem);
+            });
         }
+        
+        this.updateActiveStreamsCount();
     }
 
     loadOnlineUsers() {
-        // Simulate online users
-        const sampleUsers = [
-            { username: 'CyberAdmin', avatar: 'https://ui-avatars.com/api/?name=CyberAdmin&background=dc3545&color=fff', status: 'Admin' },
-            { username: 'CodeMaster', avatar: 'https://ui-avatars.com/api/?name=CodeMaster&background=28a745&color=fff', status: 'Moderator' },
-            { username: 'SecurityPro', avatar: 'https://ui-avatars.com/api/?name=SecurityPro&background=ffc107&color=000', status: 'Online' },
-            { username: 'NetPhantom', avatar: 'https://ui-avatars.com/api/?name=NetPhantom&background=6f42c1&color=fff', status: 'Online' },
-            { username: 'ByteBandit', avatar: 'https://ui-avatars.com/api/?name=ByteBandit&background=fd7e14&color=fff', status: 'Online' },
-            { username: 'CryptoNinja', avatar: 'https://ui-avatars.com/api/?name=CryptoNinja&background=20c997&color=fff', status: 'Online' },
-            { username: 'DataBreaker', avatar: 'https://ui-avatars.com/api/?name=DataBreaker&background=e83e8c&color=fff', status: 'Online' }
+        // Simulate online users for demo
+        const users = [
+            { username: 'DevExpert', avatar: 'https://ui-avatars.com/api/?name=DevExpert&background=007bff&color=fff', status: 'online' },
+            { username: 'CyberSage', avatar: 'https://ui-avatars.com/api/?name=CyberSage&background=28a745&color=fff', status: 'online' },
+            { username: 'TechGuru', avatar: 'https://ui-avatars.com/api/?name=TechGuru&background=dc3545&color=fff', status: 'online' },
+            { username: 'CodeNinja', avatar: 'https://ui-avatars.com/api/?name=CodeNinja&background=ffc107&color=fff', status: 'online' },
+            { username: 'DigitalWizard', avatar: 'https://ui-avatars.com/api/?name=DigitalWizard&background=17a2b8&color=fff', status: 'online' }
         ];
         
-        // Add current user
-        sampleUsers.unshift({
-            username: this.currentUser.username,
-            avatar: this.currentUser.avatar,
-            status: 'You'
+        users.forEach(user => {
+            this.onlineUsers.set(user.username, user);
         });
         
-        this.renderOnlineUsers(sampleUsers);
+        this.renderOnlineUsers();
     }
 
-    renderOnlineUsers(users) {
+    renderOnlineUsers() {
         const usersList = document.getElementById('online-users-list');
+        usersList.innerHTML = '';
         
-        usersList.innerHTML = users.map(user => `
-            <div class="user-item">
-                <img src="${user.avatar}" alt="${user.username}">
-                <div class="user-info">
-                    <div class="user-name">${user.username}</div>
-                    <div class="user-status">${user.status}</div>
-                </div>
-            </div>
-        `).join('');
+        this.onlineUsers.forEach(user => {
+            if (user.username !== this.currentUser.username) {
+                const userItem = document.createElement('div');
+                userItem.className = 'user-item';
+                userItem.innerHTML = `
+                    <img src="${user.avatar}" alt="${user.username}">
+                    <div class="user-info">
+                        <div class="user-name">${user.username}</div>
+                        <div class="user-status">${user.status}</div>
+                    </div>
+                `;
+                usersList.appendChild(userItem);
+            }
+        });
     }
-
-
 
     loadMessages() {
-        // Sample messages for demo
-        const sampleMessages = [
+        // Load some initial messages for demo
+        const initialMessages = [
             {
                 id: this.generateId(),
-                author: 'CyberAdmin',
-                avatar: 'https://ui-avatars.com/api/?name=CyberAdmin&background=dc3545&color=fff',
-                text: 'Welcome to **HackConvo**! This is a public chat platform for developers and tech enthusiasts. Feel free to use `code` formatting and @mention others!',
-                timestamp: Date.now() - 3600000,
-                own: false,
-                reactions: [
-                    { userId: 'user1', emoji: '👋', timestamp: Date.now() - 3595000 },
-                    { userId: 'user2', emoji: '❤️', timestamp: Date.now() - 3590000 },
-                    { userId: 'user3', emoji: '👍', timestamp: Date.now() - 3585000 }
-                ]
-            },
-            {
-                id: this.generateId(),
-                author: 'CodeMaster',
-                avatar: 'https://ui-avatars.com/api/?name=CodeMaster&background=28a745&color=fff',
-                text: 'Hey everyone! Anyone working on *interesting* projects? I\'m currently building a web scraper using `requests` and `BeautifulSoup` in Python.',
-                timestamp: Date.now() - 1800000,
-                own: false,
-                reactions: [
-                    { userId: 'user4', emoji: '👍', timestamp: Date.now() - 1795000 },
-                    { userId: 'user5', emoji: '😍', timestamp: Date.now() - 1790000 }
-                ]
-            },
-            {
-                id: this.generateId(),
-                author: 'SecurityPro',
-                avatar: 'https://ui-avatars.com/api/?name=SecurityPro&background=ffc107&color=000',
-                text: 'Just finished a **penetration testing** project. The results were eye-opening! Found this SQL injection vulnerability:\n\n```sql\nSELECT * FROM users WHERE id = \'1\' OR \'1\'=\'1\';--\n```\n\nAlways sanitize your inputs! 🔐',
-                timestamp: Date.now() - 900000,
-                own: false,
-                reactions: [
-                    { userId: 'user6', emoji: '😱', timestamp: Date.now() - 895000 },
-                    { userId: 'user7', emoji: '🔥', timestamp: Date.now() - 890000 },
-                    { userId: 'user8', emoji: '👍', timestamp: Date.now() - 885000 }
-                ]
-            },
-            {
-                id: this.generateId(),
-                author: this.currentUser.username,
-                avatar: this.currentUser.avatar,
-                text: 'Hello everyone! **Excited** to be here! Looking forward to learning from you all 🚀',
+                author: 'System',
+                avatar: 'https://ui-avatars.com/api/?name=System&background=6c757d&color=fff',
+                text: 'Welcome to HackConvo! This is a real-time chat platform for developers and tech enthusiasts.',
                 timestamp: Date.now() - 300000,
-                own: true,
-                reactions: [
-                    { userId: 'user9', emoji: '👋', timestamp: Date.now() - 295000 },
-                    { userId: 'user10', emoji: '🎉', timestamp: Date.now() - 290000 }
-                ]
+                own: false
+            },
+            {
+                id: this.generateId(),
+                author: 'DevExpert',
+                avatar: 'https://ui-avatars.com/api/?name=DevExpert&background=007bff&color=fff',
+                text: 'Hey everyone! How\'s the coding going today?',
+                timestamp: Date.now() - 240000,
+                own: false
+            },
+            {
+                id: this.generateId(),
+                author: 'CyberSage',
+                avatar: 'https://ui-avatars.com/api/?name=CyberSage&background=28a745&color=fff',
+                text: 'Just finished a new security audit. Anyone working on interesting projects?',
+                timestamp: Date.now() - 180000,
+                own: false
             }
         ];
-
-        this.messages = sampleMessages;
+        
+        this.messages = initialMessages;
         this.renderMessages();
     }
 
     renderMessages() {
-        const container = document.getElementById('messages-list');
-        container.innerHTML = '';
-
-        this.messages.forEach((message, index) => {
-            const messageEl = document.createElement('div');
-            messageEl.className = `message ${message.own ? 'own' : ''}`;
-            messageEl.dataset.messageId = message.id;
+        const messagesList = document.getElementById('messages-list');
+        messagesList.innerHTML = '';
+        
+        this.messages.forEach(message => {
+            const messageElement = document.createElement('div');
+            messageElement.className = `message ${message.own ? 'own' : ''}`;
             
-            const isOnline = Math.random() > 0.3; // Simulate some users being online
-            const reactions = message.reactions || [];
-            const hasReactions = reactions.length > 0;
+            // Only show author name for received messages (not own messages)
+            const authorDisplay = message.own ? '' : `<span class="message-author">${message.author}</span>`;
             
-            messageEl.innerHTML = `
+            messageElement.innerHTML = `
                 <img src="${message.avatar}" alt="${message.author}" class="message-avatar">
                 <div class="message-content">
                     <div class="message-header">
-                        <span class="message-author">
-                            ${message.author}
-                            ${isOnline ? '<span class="user-status-dot"></span>' : ''}
-                        </span>
+                        ${authorDisplay}
                         <span class="message-time">${this.formatTime(message.timestamp)}</span>
                     </div>
-                    <div class="message-text">${this.formatMessage(message.text)}</div>
-                    ${hasReactions ? this.renderReactions(reactions) : ''}
-                    <div class="message-actions">
-                        <button class="message-action" onclick="app.toggleReaction('${message.id}', '👍')" title="Like">
-                            <i class="fas fa-thumbs-up"></i>
-                        </button>
-                        <button class="message-action" onclick="app.toggleReaction('${message.id}', '❤️')" title="Love">
-                            <i class="fas fa-heart"></i>
-                        </button>
-                        <button class="message-action" onclick="app.toggleReaction('${message.id}', '😂')" title="Laugh">
-                            <i class="fas fa-laugh"></i>
-                        </button>
-                        <button class="message-action" onclick="app.replyToMessage('${message.id}')" title="Reply">
-                            <i class="fas fa-reply"></i>
-                        </button>
+                    <div class="message-bubble">
+                        <div class="message-text">${this.formatMessage(message.text)}</div>
                     </div>
                 </div>
             `;
-
-            container.appendChild(messageEl);
+            messagesList.appendChild(messageElement);
         });
-
+        
         this.scrollToBottom();
     }
 
-    renderReactions(reactions) {
-        if (!reactions || reactions.length === 0) return '';
-        
-        const reactionCounts = {};
-        reactions.forEach(reaction => {
-            reactionCounts[reaction.emoji] = (reactionCounts[reaction.emoji] || 0) + 1;
-        });
-
-        const reactionElements = Object.entries(reactionCounts).map(([emoji, count]) => 
-            `<div class="reaction" onclick="app.toggleReaction('${message.id}', '${emoji}')">
-                ${emoji} ${count}
-            </div>`
-        ).join('');
-
-        return `<div class="message-reactions">${reactionElements}</div>`;
-    }
-
     formatMessage(text) {
-        // Auto-link URLs
-        const urlRegex = /(https?:\/\/[^\s]+)/g;
-        text = text.replace(urlRegex, '<a href="$1" target="_blank">$1</a>');
+        // Convert URLs to links
+        text = text.replace(/(https?:\/\/[^\s]+)/g, '<a href="$1" target="_blank">$1</a>');
         
-        // Format @mentions
-        const mentionRegex = /@(\w+)/g;
-        text = text.replace(mentionRegex, '<span class="mention">@$1</span>');
+        // Convert @mentions
+        text = text.replace(/@(\w+)/g, '<span class="mention">@$1</span>');
         
-        // Format **bold**
-        const boldRegex = /\*\*(.*?)\*\*/g;
-        text = text.replace(boldRegex, '<strong>$1</strong>');
+        // Convert code blocks
+        text = text.replace(/```([\s\S]*?)```/g, '<pre><code>$1</code></pre>');
         
-        // Format *italic*
-        const italicRegex = /\*(.*?)\*/g;
-        text = text.replace(italicRegex, '<em>$1</em>');
+        // Convert inline code
+        text = text.replace(/`([^`]+)`/g, '<code>$1</code>');
         
-        // Format `code`
-        const codeRegex = /`(.*?)`/g;
-        text = text.replace(codeRegex, '<code>$1</code>');
+        // Convert bold
+        text = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
         
-        // Format ```code blocks```
-        const codeBlockRegex = /```([\s\S]*?)```/g;
-        text = text.replace(codeBlockRegex, '<pre><code>$1</code></pre>');
+        // Convert italic
+        text = text.replace(/\*(.*?)\*/g, '<em>$1</em>');
         
-        return text;
-    }
-
-    toggleReaction(messageId, emoji) {
-        const message = this.messages.find(m => m.id === messageId);
-        if (!message) return;
-
-        if (!message.reactions) message.reactions = [];
-        
-        // Check if user already reacted with this emoji
-        const existingReaction = message.reactions.find(r => 
-            r.userId === this.currentUser.id && r.emoji === emoji
-        );
-
-        if (existingReaction) {
-            // Remove reaction
-            message.reactions = message.reactions.filter(r => r !== existingReaction);
-        } else {
-            // Add reaction
-            message.reactions.push({
-                userId: this.currentUser.id,
-                emoji: emoji,
-                timestamp: Date.now()
-            });
-        }
-
-        this.renderMessages();
-        this.playSound('reaction');
-    }
-
-    replyToMessage(messageId) {
-        const message = this.messages.find(m => m.id === messageId);
-        if (!message) return;
-
-        const input = document.getElementById('message-input');
-        input.value = `@${message.author} `;
-        input.focus();
-        
-        // Scroll to bottom to show input
-        input.scrollIntoView({ behavior: 'smooth' });
+        return this.escapeHtml(text);
     }
 
     sendMessage() {
@@ -949,6 +1023,7 @@ class HackConvo {
             own: true
         };
 
+        // Add message to local display immediately
         this.messages.push(message);
         input.value = '';
         this.updateCharCount();
@@ -956,14 +1031,23 @@ class HackConvo {
         
         this.renderMessages();
         this.playSound('send');
+        this.updateMessagesToday();
 
-        // Simulate responses (for demo)
-        setTimeout(() => {
-            this.simulateResponse(text);
-        }, 1000 + Math.random() * 2000);
+        // Send via WebSocket (but don't add to messages again when it comes back)
+        this.sendWebSocketMessage({
+            type: 'message',
+            ...message
+        });
+
+        // Simulate responses in demo mode only if not connected
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+            setTimeout(() => {
+                this.simulateResponse();
+            }, 1000 + Math.random() * 2000);
+        }
     }
 
-    simulateResponse(originalMessage) {
+    simulateResponse() {
         const responses = [
             "That's interesting! Tell me more.",
             "I agree with that point.",
@@ -973,7 +1057,13 @@ class HackConvo {
             "Can you elaborate on that?",
             "That's a good point to consider.",
             "I've experienced something similar.",
-            "Interesting take on the topic!"
+            "Interesting take on the topic!",
+            "Nice! What technologies are you using?",
+            "That sounds like a challenging project.",
+            "Have you considered using a different approach?",
+            "I'd love to hear more about your experience with that.",
+            "That's a great insight!",
+            "What's your next step with this?"
         ];
 
         const authors = ['TechGuru', 'DevExpert', 'CyberSage', 'CodeNinja', 'DigitalWizard'];
@@ -991,14 +1081,7 @@ class HackConvo {
         this.messages.push(response);
         this.renderMessages();
         this.playSound('receive');
-        
-        // Update conversation preview
-        const conv = this.conversations.find(c => c.id === this.currentChat);
-        if (conv) {
-            conv.lastMessage = response.text;
-            conv.lastMessageTime = response.timestamp;
-            this.renderConversations();
-        }
+        this.updateMessagesToday();
     }
 
     getRandomColor() {
@@ -1023,42 +1106,56 @@ class HackConvo {
     }
 
     handleTyping() {
-        // Simulate typing indicator
-        const indicator = document.getElementById('typing-indicator');
-        indicator.classList.add('show');
+        const now = Date.now();
         
+        // Only send typing indicator if enough time has passed
+        if (now - this.lastTypingTime > 1000) {
+            this.sendWebSocketMessage({
+                type: 'typing',
+                author: this.currentUser.username
+            });
+            this.lastTypingTime = now;
+        }
+        
+        // Clear existing timeout
         clearTimeout(this.typingTimeout);
+        
+        // Set new timeout to stop typing indicator
         this.typingTimeout = setTimeout(() => {
-            indicator.classList.remove('show');
-        }, 1000);
+            this.clearTyping();
+        }, 3000);
     }
 
     clearTyping() {
-        const indicator = document.getElementById('typing-indicator');
-        indicator.classList.remove('show');
         clearTimeout(this.typingTimeout);
     }
 
     setupTypingIndicator() {
-        // Simulate other users typing occasionally
-        setInterval(() => {
-            if (Math.random() < 0.1) { // 10% chance every 5 seconds
-                this.showTyping();
-            }
-        }, 5000);
+        // This will be handled by WebSocket messages now
     }
 
-    showTyping() {
+    updateTypingIndicator() {
         const indicator = document.getElementById('typing-indicator');
-        const authors = ['DevExpert', 'CyberSage', 'TechGuru'];
-        const author = authors[Math.floor(Math.random() * authors.length)];
+        const typingText = indicator.querySelector('.typing-text');
         
-        document.querySelector('.typing-text').textContent = `${author} is typing...`;
-        indicator.classList.add('show');
-        
-        setTimeout(() => {
+        if (this.typingUsers.size === 0) {
             indicator.classList.remove('show');
-        }, 2000 + Math.random() * 3000);
+            return;
+        }
+        
+        const typingUsers = Array.from(this.typingUsers.keys());
+        let text = '';
+        
+        if (typingUsers.length === 1) {
+            text = `${typingUsers[0]} is typing...`;
+        } else if (typingUsers.length === 2) {
+            text = `${typingUsers[0]} and ${typingUsers[1]} are typing...`;
+        } else {
+            text = `${typingUsers[0]} and ${typingUsers.length - 1} others are typing...`;
+        }
+        
+        typingText.textContent = text;
+        indicator.classList.add('show');
     }
 
     scrollToBottom() {
@@ -1070,8 +1167,7 @@ class HackConvo {
     }
 
     updateOnlineCount() {
-        // Simulate online users
-        const count = 120 + Math.floor(Math.random() * 20); // 120-140 users
+        const count = this.onlineUsers.size + 1; // +1 for current user
         
         // Update all online count displays
         const onlineCountEl = document.getElementById('online-count');
@@ -1081,39 +1177,12 @@ class HackConvo {
         if (onlineCountEl) onlineCountEl.textContent = count;
         if (headerOnlineCountEl) headerOnlineCountEl.textContent = count;
         if (sidebarCounter) sidebarCounter.textContent = `${count} online`;
-        
-        // Add some simulated user activity
-        this.onlineUsers.clear();
-        for (let i = 0; i < count; i++) {
-            this.onlineUsers.add(`user${i}`);
-        }
-        
-        // Update periodically
-        setTimeout(() => {
-            const newCount = Math.max(100, count + Math.floor(Math.random() * 10) - 5);
-            if (onlineCountEl) onlineCountEl.textContent = newCount;
-            if (headerOnlineCountEl) headerOnlineCountEl.textContent = newCount;
-            if (sidebarCounter) sidebarCounter.textContent = `${newCount} online`;
-            this.updateOnlineCount(); // Recursive update
-        }, 30000 + Math.random() * 30000);
     }
 
-    startHeartbeat() {
-        // Simulate connection status
-        const statusIcon = document.querySelector('.messages-network-status');
-        
-        setInterval(() => {
-            if (Math.random() < 0.95) { // 95% uptime
-                statusIcon.className = 'fa fa-wifi fa-lg green messages-network-status';
-                statusIcon.title = 'Connected';
-            } else {
-                statusIcon.className = 'fa fa-wifi fa-lg text-danger messages-network-status';
-                statusIcon.title = 'Connection issues';
-            }
-        }, 10000);
+    updateOnlineUsers() {
+        this.renderOnlineUsers();
+        this.updateOnlineCount();
     }
-
-
 
     openSettingsModal() {
         const modal = document.getElementById('settings-modal');
@@ -1235,6 +1304,10 @@ function saveSettings() {
         app.currentUser.username = username;
         app.currentUser.avatar = `https://ui-avatars.com/api/?name=${username}&background=333&color=fff`;
         app.saveUser(app.currentUser);
+        
+        // Update header displays
+        document.getElementById('header-username').textContent = username;
+        document.getElementById('user-avatar').src = app.currentUser.avatar;
     }
     
     app.setTheme(theme);
