@@ -1800,55 +1800,64 @@ function saveSettings() {
 
 // Initialize app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
-    const loadTime = Date.now();
-    console.log('DOM loaded, initializing HackConvo...', new Date(loadTime).toISOString());
-    
-    // Check if this is a rapid reload
-    const lastLoadTime = localStorage.getItem('lastLoadTime');
-    if (lastLoadTime && (loadTime - parseInt(lastLoadTime)) < 1000) {
-        console.warn('Rapid page reload detected! Time between loads:', loadTime - parseInt(lastLoadTime), 'ms');
-    }
-    localStorage.setItem('lastLoadTime', loadTime.toString());
-    
-    // Add global error handler to catch undefined URLs
-    window.addEventListener('error', (event) => {
-        if (event.target && event.target.src && event.target.src.includes('undefined')) {
-            console.error('Undefined URL detected:', event.target.src);
-            console.error('Element:', event.target);
-            console.error('Stack trace:', new Error().stack);
-        }
-    });
-    
-    window.app = new HackConvo();
-    
-    // Handle scroll-to-bottom visibility
-    const messagesContainer = document.getElementById('messages-list');
-    const scrollButton = document.getElementById('scroll-to-bottom');
-    
-    messagesContainer.addEventListener('scroll', () => {
-        const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
-        const isNearBottom = scrollHeight - scrollTop <= clientHeight + 100;
+    // Only initialize on the main chat page (index.html)
+    if (window.location.pathname.endsWith('index.html') || window.location.pathname.endsWith('/') || window.location.pathname === '') {
+        const loadTime = Date.now();
+        console.log('DOM loaded, initializing HackConvo...', new Date(loadTime).toISOString());
         
-        if (isNearBottom) {
-            scrollButton.classList.remove('show');
-        } else {
-            scrollButton.classList.add('show');
+        // Check if this is a rapid reload
+        const lastLoadTime = localStorage.getItem('lastLoadTime');
+        if (lastLoadTime && (loadTime - parseInt(lastLoadTime)) < 1000) {
+            console.warn('Rapid page reload detected! Time between loads:', loadTime - parseInt(lastLoadTime), 'ms');
         }
-    });
-    
-    // Handle modal clicks
-    document.addEventListener('click', (e) => {
-        if (e.target.classList.contains('modal')) {
-            e.target.style.display = 'none';
+        localStorage.setItem('lastLoadTime', loadTime.toString());
+        
+        // Add global error handler to catch undefined URLs
+        window.addEventListener('error', (event) => {
+            if (event.target && event.target.src && event.target.src.includes('undefined')) {
+                console.error('Undefined URL detected:', event.target.src);
+                console.error('Element:', event.target);
+                console.error('Stack trace:', new Error().stack);
+            }
+        });
+        
+        window.app = new HackConvo();
+        
+        // Handle scroll-to-bottom visibility
+        const messagesContainer = document.getElementById('messages-list');
+        const scrollButton = document.getElementById('scroll-to-bottom');
+        
+        if (messagesContainer && scrollButton) {
+            messagesContainer.addEventListener('scroll', () => {
+                const { scrollTop, scrollHeight, clientHeight } = messagesContainer;
+                const isNearBottom = scrollHeight - scrollTop <= clientHeight + 100;
+                
+                if (isNearBottom) {
+                    scrollButton.classList.remove('show');
+                } else {
+                    scrollButton.classList.add('show');
+                }
+            });
         }
-    });
-    
-    // Auto-resize textarea
-    const messageInput = document.getElementById('message-input');
-    messageInput.addEventListener('input', function() {
-        this.style.height = 'auto';
-        this.style.height = Math.min(this.scrollHeight, 120) + 'px';
-    });
+        
+        // Handle modal clicks
+        document.addEventListener('click', (e) => {
+            if (e.target.classList.contains('modal')) {
+                e.target.style.display = 'none';
+            }
+        });
+        
+        // Auto-resize textarea
+        const messageInput = document.getElementById('message-input');
+        if (messageInput) {
+            messageInput.addEventListener('input', function() {
+                this.style.height = 'auto';
+                this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+            });
+        }
+    } else {
+        console.log('Not on main chat page, skipping HackConvo initialization');
+    }
 });
 
 // Handle page visibility for notifications
