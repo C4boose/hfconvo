@@ -1751,6 +1751,16 @@ class HackConvo {
         div.textContent = text;
         return div.innerHTML;
     }
+
+    logout() {
+        // Remove user from localStorage
+        localStorage.removeItem('hackconvo_user');
+        // Optionally clear other session data
+        this.showNotification('Logged out successfully', 'success');
+        setTimeout(() => {
+            window.location.href = 'login.html';
+        }, 1000);
+    }
 }
 
 // Global functions
