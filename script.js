@@ -67,6 +67,9 @@ class HackConvo {
             this.initUserProfile();
             this.connectWebSocket();
             this.setupTypingIndicator();
+            this.checkUserStatus().catch(error => {
+                console.error('[DEBUG] Error in checkUserStatus:', error);
+            }); // Check if user is muted/banned
         }
         
         // Load saved theme
@@ -80,17 +83,19 @@ class HackConvo {
         console.log('[DEBUG] Attempting to connect to Firebase...');
         console.log('[DEBUG] Firebase database available:', !!window.firebaseDatabase);
         console.log('[DEBUG] Firebase ref available:', !!window.firebaseRef);
+        console.log('[DEBUG] Firebase set available:', !!window.firebaseSet);
+        console.log('[DEBUG] Firebase get available:', !!window.firebaseGet);
         
         try {
             // Wait for Firebase to be available
-            if (window.firebaseDatabase && window.firebaseRef) {
+            if (window.firebaseDatabase && window.firebaseRef && window.firebaseSet && window.firebaseGet) {
                 console.log('[DEBUG] Firebase is ready, connecting...');
                 this.connectFirebase();
             } else {
                 console.log('[DEBUG] Firebase not ready, waiting...');
                 // Wait a bit for Firebase to load
                 setTimeout(() => {
-                    if (window.firebaseDatabase && window.firebaseRef) {
+                    if (window.firebaseDatabase && window.firebaseRef && window.firebaseSet && window.firebaseGet) {
                         console.log('[DEBUG] Firebase is now ready, connecting...');
                         this.connectFirebase();
                     } else {
@@ -98,7 +103,7 @@ class HackConvo {
                         this.updateConnectionStatus(false);
                         this.enableSimulatedMode();
                     }
-                }, 2000); // Increased timeout
+                }, 3000); // Increased timeout
             }
         } catch (error) {
             console.error('[DEBUG] Failed to connect:', error);
@@ -109,6 +114,11 @@ class HackConvo {
 
     connectFirebase() {
         try {
+            // Check if all required Firebase functions are available
+            if (!window.firebaseDatabase || !window.firebaseRef || !window.firebaseSet || !window.firebaseGet) {
+                throw new Error('Required Firebase functions not available');
+            }
+            
             this.database = window.firebaseDatabase;
             this.ref = window.firebaseRef;
             this.push = window.firebasePush;
@@ -116,6 +126,14 @@ class HackConvo {
             this.off = window.firebaseOff;
             this.remove = window.firebaseRemove;
             this.child = window.firebaseChild;
+            this.set = window.firebaseSet;
+            this.get = window.firebaseGet;
+            
+            console.log('[DEBUG] Firebase functions loaded successfully');
+            console.log('[DEBUG] Database:', !!this.database);
+            console.log('[DEBUG] Ref:', !!this.ref);
+            console.log('[DEBUG] Set:', !!this.set);
+            console.log('[DEBUG] Get:', !!this.get);
             
             console.log('Firebase connected');
             this.updateConnectionStatus(true);
@@ -140,9 +158,31 @@ class HackConvo {
                 }
             });
             
+            // Subscribe to moderation updates
+            this.moderationRef = this.ref(this.database, 'moderation');
+            this.onValue(this.moderationRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    this.handleModerationUpdates(data);
+                }
+            });
+            
+            // Subscribe to user role updates (for current user)
+            if (!this.isReadOnly) {
+                const userRoleRef = this.ref(this.database, `registered_users/${this.currentUser.username}`);
+                this.onValue(userRoleRef, (snapshot) => {
+                    const userData = snapshot.val();
+                    if (userData && userData.role) {
+                        this.syncUserRole(userData);
+                    }
+                });
+            }
+            
             // Add current user to online users (only if registered)
             if (!this.isReadOnly) {
-                this.addUserToFirebase();
+                this.addUserToFirebase().catch(error => {
+                    console.error('[DEBUG] Error in addUserToFirebase:', error);
+                });
             }
             
             // Start periodic cleanup of old messages
@@ -150,6 +190,13 @@ class HackConvo {
             
         } catch (error) {
             console.error('Failed to connect to Firebase:', error);
+            console.error('[DEBUG] Error details:', {
+                firebaseDatabase: !!window.firebaseDatabase,
+                firebaseRef: !!window.firebaseRef,
+                firebaseSet: !!window.firebaseSet,
+                firebaseGet: !!window.firebaseGet,
+                error: error.message
+            });
             this.updateConnectionStatus(false);
             this.enableSimulatedMode();
         }
@@ -257,31 +304,59 @@ class HackConvo {
         });
     }
 
-    addUserToFirebase() {
-        if (this.ref && this.database) {
-            // Generate a unique session ID for this session
-            if (!this.sessionId) {
-                this.sessionId = this.generateId();
-            }
-            const userPath = `users/${this.currentUser.username}/${this.sessionId}`;
+    async addUserToFirebase() {
+        if (this.ref && this.database && this.get) {
+            // Use username as the key to prevent duplicate entries
+            const userPath = `users/${this.currentUser.username}`;
             const userRef = this.ref(this.database, userPath);
-            const userData = {
-                ...this.currentUser,
-                lastSeen: Date.now(),
-                status: 'online',
-                sessionId: this.sessionId
-            };
-            console.log('[DEBUG] Adding user to Firebase at', userPath, userData);
-            // Use set() instead of push()
-            import('https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js').then(({ set, onDisconnect }) => {
-                set(userRef, userData).then(() => {
-                    onDisconnect(userRef).remove();
-                    console.log('[DEBUG] onDisconnect set for user session:', userPath);
-                });
-            });
+            
+            try {
+                // First, check if user already exists in database and get their current role
+                const snapshot = await this.get(userRef);
+                if (snapshot.exists()) {
+                    const dbUser = snapshot.val();
+                    console.log('[DEBUG] Found existing user in database:', dbUser);
+                    
+                    // Update local user with database role if it's higher than current
+                    if (dbUser.role && this.getRoleLevel(dbUser.role) > this.getRoleLevel(this.currentUser.role || 'user')) {
+                        console.log('[DEBUG] Updating local user role from', this.currentUser.role, 'to', dbUser.role);
+                        this.currentUser.role = dbUser.role;
+                        this.saveUser(this.currentUser);
+                        
+                        // Update UI to reflect new role
+                        this.addAdminPanelButton();
+                        this.showNotification(`Role updated to ${dbUser.role}`, 'success');
+                    }
+                }
+                
+                // Prepare user data for Firebase
+                const userData = {
+                    ...this.currentUser,
+                    lastSeen: Date.now(),
+                    status: 'online'
+                };
+                
+                console.log('[DEBUG] Adding user to Firebase at', userPath, userData);
+                
+                // Use set() to overwrite any existing entry for this user
+                await this.set(userRef, userData);
+                console.log('[DEBUG] User added to Firebase successfully');
+                
+            } catch (error) {
+                console.error('[DEBUG] Error adding user to Firebase:', error);
+            }
         } else {
-            console.warn('[DEBUG] addUserToFirebase: ref or database not available');
+            console.warn('[DEBUG] addUserToFirebase: Firebase functions not available');
         }
+    }
+
+    getRoleLevel(role) {
+        const roleLevels = {
+            'user': 1,
+            'moderator': 2,
+            'admin': 3
+        };
+        return roleLevels[role] || 1;
     }
 
     handleFirebaseMessages(data) {
@@ -351,87 +426,115 @@ class HackConvo {
 
     handleFirebaseUsers(data) {
         console.log('[DEBUG] handleFirebaseUsers received data:', data);
-        // Flatten all user objects from all subkeys
-        const users = [];
-        const now = Date.now();
-        const ONLINE_THRESHOLD = 30 * 1000; // 30 seconds
-        Object.values(data).forEach(userGroup => {
-            if (typeof userGroup === 'object') {
-                Object.values(userGroup).forEach(userObj => {
-                    if (
-                        userObj &&
-                        userObj.username &&
-                        userObj.lastSeen &&
-                        (now - userObj.lastSeen < ONLINE_THRESHOLD)
-                    ) {
-                        users.push(userObj);
-                    }
-                });
-            }
-        });
         
         // Clear current online users
         this.onlineUsers.clear();
         
-        // Add all users, but handle duplicates by preferring users with session IDs
-        console.log('[DEBUG] Adding users to onlineUsers Map:');
-        const userMap = new Map(); // Temporary map to handle duplicates
+        const now = Date.now();
+        const ONLINE_THRESHOLD = 30 * 1000; // 30 seconds
         
-        users.forEach(user => {
-            const key = user.username + ':' + (user.sessionId || '');
-            console.log('- Processing user:', user.username, 'with key:', key);
-            
-            // If we already have this user, prefer the one with a session ID
-            const existingUser = userMap.get(user.username);
-            if (existingUser) {
-                if (user.sessionId && !existingUser.sessionId) {
-                    // New user has session ID, existing doesn't - replace
-                    console.log('- Replacing user without session ID with user that has session ID');
-                    userMap.set(user.username, user);
-                } else if (!user.sessionId && existingUser.sessionId) {
-                    // Existing user has session ID, new doesn't - keep existing
-                    console.log('- Keeping existing user with session ID');
-                } else {
-                    // Both have or don't have session ID - keep the newer one
-                    if (user.lastSeen > existingUser.lastSeen) {
-                        console.log('- Replacing with newer user');
-                        userMap.set(user.username, user);
-                    } else {
-                        console.log('- Keeping existing user (newer)');
-                    }
+        // Process users directly (no more nested structure)
+        Object.entries(data).forEach(([username, userData]) => {
+            if (
+                userData &&
+                userData.username &&
+                userData.lastSeen &&
+                (now - userData.lastSeen < ONLINE_THRESHOLD)
+            ) {
+                console.log('[DEBUG] Adding online user:', username);
+                this.onlineUsers.set(username, userData);
+                
+                // Check if this is the current user and sync role if needed
+                if (username === this.currentUser.username && userData.role) {
+                    this.syncUserRole(userData);
                 }
-            } else {
-                // First time seeing this user
-                console.log('- Adding new user:', user.username);
-                userMap.set(user.username, user);
             }
         });
         
-        // Now add to onlineUsers Map with proper keys
-        userMap.forEach(user => {
-            const key = user.username + ':' + (user.sessionId || '');
-            console.log('- Final add to onlineUsers:', user.username, 'with key:', key);
-            this.onlineUsers.set(key, user);
-        });
-        
         // Ensure current user is in the online users list if they're online
-        const currentUserInList = users.find(user => user.username === this.currentUser.username);
-        console.log('[DEBUG] Current user in Firebase data:', !!currentUserInList);
-        if (!currentUserInList) {
-            // Add current user if they're not in the Firebase data but should be online
-            const currentUserKey = this.currentUser.username + ':' + (this.sessionId || '');
-            console.log('- Adding current user with key:', currentUserKey);
-            this.onlineUsers.set(currentUserKey, {
+        if (!this.onlineUsers.has(this.currentUser.username)) {
+            console.log('[DEBUG] Adding current user to online list');
+            this.onlineUsers.set(this.currentUser.username, {
                 ...this.currentUser,
                 lastSeen: Date.now(),
-                status: 'online',
-                sessionId: this.sessionId
+                status: 'online'
             });
         }
         
         // Update UI
         this.renderOnlineUsers();
         this.updateOnlineCount();
+    }
+
+    handleModerationUpdates(data) {
+        console.log('[DEBUG] Received moderation update:', data);
+        
+        if (!this.currentUser) return;
+        
+        // Check if current user is muted
+        if (data.muted && data.muted[this.currentUser.username]) {
+            const muteData = data.muted[this.currentUser.username];
+            console.log('[DEBUG] User is muted:', muteData);
+            
+            if (muteData.expiresAt && Date.now() < muteData.expiresAt) {
+                this.showMuteMessage(muteData);
+                this.disableMessageSending();
+            } else {
+                // Mute expired, remove it
+                this.removeMuteStatus();
+            }
+        } else {
+            // User is not muted, enable sending
+            this.enableMessageSending();
+        }
+        
+        // Check if current user is banned
+        if (data.banned && data.banned[this.currentUser.username]) {
+            const banData = data.banned[this.currentUser.username];
+            console.log('[DEBUG] User is banned:', banData);
+            
+            if (banData.expiresAt && Date.now() < banData.expiresAt) {
+                this.showBanMessage(banData);
+                this.disableChat();
+            } else {
+                // Ban expired, remove it
+                this.removeBanStatus();
+            }
+        }
+        
+        // Update moderation menu permissions for all users
+        this.updateModerationMenus();
+    }
+
+    updateModerationMenus() {
+        // Update moderation menu permissions for all message authors
+        const messageElements = document.querySelectorAll('.message-author');
+        messageElements.forEach(element => {
+            const username = element.getAttribute('data-username');
+            if (username) {
+                const canModerate = this.canModerateUser(username);
+                if (canModerate) {
+                    element.classList.add('can-moderate');
+                    element.onclick = (event) => this.toggleModMenu(event, username);
+                } else {
+                    element.classList.remove('can-moderate');
+                    element.onclick = null;
+                }
+            }
+        });
+    }
+
+    syncUserRole(dbUser) {
+        // Always sync role from database to ensure consistency
+        if (dbUser.role && dbUser.role !== (this.currentUser.role || 'user')) {
+            console.log('[DEBUG] Syncing user role from', this.currentUser.role, 'to', dbUser.role);
+            this.currentUser.role = dbUser.role;
+            this.saveUser(this.currentUser);
+            
+            // Update UI to reflect new role
+            this.addAdminPanelButton();
+            this.showNotification(`Role updated to ${dbUser.role}`, 'success');
+        }
     }
 
     handleIncomingMessage(data) {
@@ -793,10 +896,16 @@ class HackConvo {
                 this.closeUserMenu();
             }
         });
+        
+        // Add admin panel button for admin users
+        this.addAdminPanelButton();
     }
 
     setupReadOnlyMode() {
         console.log('Setting up read-only mode');
+        
+        // Show registration banner for unregistered users
+        this.showRegistrationBanner();
         
         // Update header to show "Guest" status
         document.getElementById('header-username').textContent = 'Guest';
@@ -861,6 +970,33 @@ class HackConvo {
         
         // Connect to Firebase for read-only access (messages and users)
         this.connectWebSocket();
+    }
+
+    showRegistrationBanner() {
+        const banner = document.getElementById('registration-banner');
+        if (banner) {
+            // Check if user has dismissed the banner before
+            const bannerDismissed = localStorage.getItem('registration_banner_dismissed');
+            if (!bannerDismissed) {
+                banner.style.display = 'block';
+                
+                // Auto-hide banner after 30 seconds
+                setTimeout(() => {
+                    if (banner.style.display !== 'none') {
+                        this.hideRegistrationBanner();
+                    }
+                }, 30000);
+            }
+        }
+    }
+
+    hideRegistrationBanner() {
+        const banner = document.getElementById('registration-banner');
+        if (banner) {
+            banner.style.display = 'none';
+            // Remember that user dismissed the banner
+            localStorage.setItem('registration_banner_dismissed', 'true');
+        }
     }
 
     initUserProfile() {
@@ -1425,8 +1561,13 @@ class HackConvo {
         newMessages.forEach(message => {
             const messageElement = document.createElement('div');
             messageElement.className = `message ${message.own ? 'own' : ''}`;
+            
+            // Check if current user is staff and can moderate this message
+            const canModerate = this.canModerateUser(message.author);
+            
             // Only show author name for received messages (not own messages)
-            const authorDisplay = message.own ? '' : `<span class="message-author">${message.author}</span>`;
+            const authorDisplay = message.own ? '' : this.renderAuthorName(message.author, canModerate);
+            
             // Ensure avatar URL is valid
             const avatarUrl = message.avatar || `https://ui-avatars.com/api/?name=${message.author}&background=333&color=fff`;
             messageElement.innerHTML = `
@@ -1445,6 +1586,424 @@ class HackConvo {
         });
         this.lastRenderedMessageCount = this.messages.length;
         this.scrollToBottom();
+    }
+
+    renderAuthorName(username, canModerate) {
+        if (!canModerate) {
+            return `<span class="message-author">${username}</span>`;
+        }
+        
+        return `
+            <span class="message-author moddable" 
+                  data-username="${username}" 
+                  onclick="app.toggleModMenu(event, '${username}')">
+                ${username}
+                <i class="fas fa-chevron-down mod-indicator"></i>
+            </span>
+        `;
+    }
+
+    canModerateUser(username) {
+        // Can't moderate yourself
+        if (username === this.currentUser.username) {
+            console.log('[MOD DEBUG] Cannot moderate yourself');
+            return false;
+        }
+        
+        // Check if current user is staff
+        const userRole = this.currentUser.role || 'user';
+        if (userRole === 'user') {
+            console.log('[MOD DEBUG] Current user is not staff');
+            return false;
+        }
+        
+        // Get target user's role from online users first
+        let targetRole = 'user';
+        const targetUser = this.onlineUsers.get(username);
+        if (targetUser && targetUser.role) {
+            targetRole = targetUser.role;
+        } else {
+            // If not in online users, check if we can moderate them based on current user's role
+            // Moderators can moderate regular users, admins can moderate everyone except other admins
+            if (userRole === 'moderator') {
+                // Moderators can moderate users (assume unknown users are regular users)
+                targetRole = 'user';
+            } else if (userRole === 'admin') {
+                // Admins can moderate everyone except other admins
+                // For now, assume unknown users are not admins
+                targetRole = 'user';
+            }
+        }
+        
+        const canModerate = this.getRoleLevel(userRole) > this.getRoleLevel(targetRole);
+        console.log(`[MOD DEBUG] ${this.currentUser.username} (${userRole}) can moderate ${username} (${targetRole}): ${canModerate}`);
+        
+        return canModerate;
+    }
+
+    toggleModMenu(event, username) {
+        event.stopPropagation(); // Prevent event bubbling
+        
+        const existingMenu = document.getElementById('mod-menu');
+        if (existingMenu) {
+            // If menu is already open for this user, close it
+            if (existingMenu.dataset.username === username) {
+                this.hideModMenu();
+                return;
+            } else {
+                // If menu is open for different user, close it first
+                this.hideModMenu();
+            }
+        }
+        
+        const userRole = this.currentUser.role || 'user';
+        const targetUser = this.onlineUsers.get(username);
+        const targetRole = targetUser ? (targetUser.role || 'user') : 'user';
+        
+        // Create mod menu
+        const modMenu = document.createElement('div');
+        modMenu.className = 'mod-menu';
+        modMenu.id = 'mod-menu';
+        modMenu.dataset.username = username; // Track which user this menu is for
+        
+        let menuItems = '';
+        
+        // Kick option (all staff)
+        menuItems += `
+            <div class="mod-menu-item" onclick="app.kickUser('${username}')">
+                <i class="fas fa-boot"></i> Kick (10 min)
+            </div>
+        `;
+        
+        // Mute options (all staff)
+        menuItems += `
+            <div class="mod-menu-item" onclick="app.showMuteModal('${username}')">
+                <i class="fas fa-microphone-slash"></i> Mute
+            </div>
+        `;
+        
+        // Ban option (admin only)
+        if (userRole === 'admin') {
+            menuItems += `
+                <div class="mod-menu-item" onclick="app.showBanModal('${username}')">
+                    <i class="fas fa-ban"></i> Ban
+                </div>
+            `;
+        }
+        
+        // Role management (admin only, can't change own role)
+        if (userRole === 'admin' && username !== this.currentUser.username) {
+            menuItems += `
+                <div class="mod-menu-item" onclick="app.showRoleModal('${username}', '${targetRole}')">
+                    <i class="fas fa-user-tag"></i> Change Role
+                </div>
+            `;
+        }
+        
+        modMenu.innerHTML = menuItems;
+        
+        // Position the menu
+        const rect = event.target.getBoundingClientRect();
+        modMenu.style.position = 'fixed';
+        modMenu.style.left = rect.left + 'px';
+        modMenu.style.top = (rect.bottom + 5) + 'px';
+        modMenu.style.zIndex = '1000';
+        
+        document.body.appendChild(modMenu);
+        
+        // Add click outside to close
+        setTimeout(() => {
+            document.addEventListener('click', this.hideModMenuOnClick);
+        }, 100);
+    }
+
+    hideModMenu() {
+        const modMenu = document.getElementById('mod-menu');
+        if (modMenu) {
+            modMenu.remove();
+        }
+    }
+
+    hideModMenuOnClick = (event) => {
+        if (!event.target.closest('.mod-menu') && !event.target.closest('.moddable')) {
+            this.hideModMenu();
+            document.removeEventListener('click', this.hideModMenuOnClick);
+        }
+    }
+
+    // Moderation functions
+    async kickUser(username) {
+        if (!confirm(`Are you sure you want to kick ${username}? They will be unable to chat for 10 minutes.`)) return;
+        
+        try {
+            console.log(`[MOD] Kicking user: ${username}`);
+            
+            // Remove user from online users
+            const onlineUserRef = this.ref(this.database, `users/${username}`);
+            await this.remove(onlineUserRef);
+            
+            // Create kick data with 10-minute timeout
+            const kickData = {
+                username: username,
+                adminUsername: this.currentUser.username,
+                reason: 'Kicked by ' + (this.currentUser.role || 'staff'),
+                timestamp: Date.now(),
+                expiresAt: Date.now() + (10 * 60 * 1000), // 10 minutes
+                duration: 10
+            };
+            
+            // Add to moderation database
+            const kickRef = this.ref(this.database, `moderation/kicked/${username}`);
+            await this.set(kickRef, kickData);
+            
+            this.showNotification(`User ${username} has been kicked for 10 minutes.`, 'success');
+            this.hideModMenu();
+            
+        } catch (error) {
+            console.error('[MOD] Error kicking user:', error);
+            this.showNotification('Failed to kick user. Please try again.', 'error');
+        }
+    }
+
+    showMuteModal(username) {
+        this.hideModMenu();
+        this.selectedUser = username;
+        
+        const maxDuration = this.currentUser.role === 'admin' ? 10080 : 1440; // Admin: 7 days, Mod: 24 hours
+        const defaultDuration = this.currentUser.role === 'admin' ? 60 : 30; // Admin: 1 hour, Mod: 30 minutes
+        
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.id = 'mute-modal';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Mute User: ${username}</h3>
+                    <button onclick="app.closeMuteModal()" class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="mute-duration">Duration (minutes):</label>
+                        <input type="number" id="mute-duration" min="1" max="${maxDuration}" value="${defaultDuration}" placeholder="${defaultDuration}">
+                        <small style="color: var(--text-muted); font-size: 0.8rem;">
+                            ${this.currentUser.role === 'admin' ? 'Maximum: 7 days (10080 minutes)' : 'Maximum: 24 hours (1440 minutes)'}
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label for="mute-reason">Reason:</label>
+                        <input type="text" id="mute-reason" placeholder="Enter reason for mute">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="app.closeMuteModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="app.muteUser()">Mute User</button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+    }
+
+    closeMuteModal() {
+        const modal = document.getElementById('mute-modal');
+        if (modal) {
+            modal.remove();
+        }
+        this.selectedUser = null;
+    }
+
+    async muteUser() {
+        if (!this.selectedUser) return;
+        
+        const duration = parseInt(document.getElementById('mute-duration').value);
+        const reason = document.getElementById('mute-reason').value.trim();
+        
+        if (!duration || duration < 1) {
+            this.showNotification('Please enter a valid duration.', 'error');
+            return;
+        }
+        
+        try {
+            console.log(`[MOD] Muting user: ${this.selectedUser} for ${duration} minutes`);
+            
+            const expiresAt = Date.now() + (duration * 60 * 1000);
+            
+            const muteData = {
+                username: this.selectedUser,
+                adminUsername: this.currentUser.username,
+                reason: reason || 'No reason provided',
+                duration: duration,
+                expiresAt: expiresAt,
+                timestamp: Date.now()
+            };
+            
+            // Add to moderation database
+            const muteRef = this.ref(this.database, `moderation/muted/${this.selectedUser}`);
+            await this.set(muteRef, muteData);
+            
+            this.closeMuteModal();
+            this.hideModMenu();
+            this.showNotification(`User ${this.selectedUser} has been muted for ${duration} minutes.`, 'success');
+            
+        } catch (error) {
+            console.error('[MOD] Error muting user:', error);
+            this.showNotification('Failed to mute user. Please try again.', 'error');
+        }
+    }
+
+    showBanModal(username) {
+        this.hideModMenu();
+        this.selectedUser = username;
+        
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.id = 'ban-modal';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Ban User: ${username}</h3>
+                    <button onclick="app.closeBanModal()" class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="ban-duration">Duration (minutes, 0 for permanent):</label>
+                        <input type="number" id="ban-duration" min="0" max="10080" value="1440" placeholder="1440">
+                        <small style="color: var(--text-muted); font-size: 0.8rem;">
+                            Maximum: 7 days (10080 minutes), 0 for permanent ban
+                        </small>
+                    </div>
+                    <div class="form-group">
+                        <label for="ban-reason">Reason:</label>
+                        <input type="text" id="ban-reason" placeholder="Enter reason for ban">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="app.closeBanModal()">Cancel</button>
+                    <button class="btn btn-danger" onclick="app.banUser()">Ban User</button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+    }
+
+    closeBanModal() {
+        const modal = document.getElementById('ban-modal');
+        if (modal) {
+            modal.remove();
+        }
+        this.selectedUser = null;
+    }
+
+    async banUser() {
+        if (!this.selectedUser) return;
+        
+        const duration = parseInt(document.getElementById('ban-duration').value);
+        const reason = document.getElementById('ban-reason').value.trim();
+        
+        try {
+            console.log(`[MOD] Banning user: ${this.selectedUser} for ${duration} minutes`);
+            
+            const expiresAt = duration > 0 ? Date.now() + (duration * 60 * 1000) : null;
+            
+            const banData = {
+                username: this.selectedUser,
+                adminUsername: this.currentUser.username,
+                reason: reason || 'No reason provided',
+                duration: duration,
+                expiresAt: expiresAt,
+                timestamp: Date.now()
+            };
+            
+            // Add to moderation database
+            const banRef = this.ref(this.database, `moderation/banned/${this.selectedUser}`);
+            await this.set(banRef, banData);
+            
+            // Remove from online users
+            const onlineUserRef = this.ref(this.database, `users/${this.selectedUser}`);
+            await this.remove(onlineUserRef);
+            
+            this.closeBanModal();
+            this.hideModMenu();
+            this.showNotification(`User ${this.selectedUser} has been banned.`, 'success');
+            
+        } catch (error) {
+            console.error('[MOD] Error banning user:', error);
+            this.showNotification('Failed to ban user. Please try again.', 'error');
+        }
+    }
+
+    showRoleModal(username, currentRole) {
+        this.hideModMenu();
+        this.selectedUser = username;
+        
+        const modal = document.createElement('div');
+        modal.className = 'modal-overlay';
+        modal.id = 'role-modal';
+        modal.innerHTML = `
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3>Change Role: ${username}</h3>
+                    <button onclick="app.closeRoleModal()" class="modal-close">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="role-select">New Role:</label>
+                        <select id="role-select">
+                            <option value="user" ${currentRole === 'user' ? 'selected' : ''}>User</option>
+                            <option value="moderator" ${currentRole === 'moderator' ? 'selected' : ''}>Moderator</option>
+                            <option value="admin" ${currentRole === 'admin' ? 'selected' : ''}>Admin</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" onclick="app.closeRoleModal()">Cancel</button>
+                    <button class="btn btn-primary" onclick="app.changeUserRole()">Change Role</button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+    }
+
+    closeRoleModal() {
+        const modal = document.getElementById('role-modal');
+        if (modal) {
+            modal.remove();
+        }
+        this.selectedUser = null;
+    }
+
+    async changeUserRole() {
+        if (!this.selectedUser) return;
+        
+        const newRole = document.getElementById('role-select').value;
+        
+        try {
+            console.log(`[MOD] Changing role for ${this.selectedUser} to ${newRole}`);
+            
+            // Update in both registered_users and users locations
+            const registeredUserRef = this.ref(this.database, `registered_users/${this.selectedUser}`);
+            const onlineUserRef = this.ref(this.database, `users/${this.selectedUser}`);
+            
+            const userData = {
+                role: newRole,
+                roleChangedAt: Date.now(),
+                roleChangedBy: this.currentUser.username
+            };
+            
+            // Update both locations
+            await this.set(registeredUserRef, userData);
+            await this.set(onlineUserRef, userData);
+            
+            this.closeRoleModal();
+            this.hideModMenu();
+            this.showNotification(`User ${this.selectedUser} role changed to ${newRole}.`, 'success');
+            
+        } catch (error) {
+            console.error('[MOD] Error changing user role:', error);
+            this.showNotification('Failed to change user role. Please try again.', 'error');
+        }
     }
 
     formatMessage(text) {
@@ -1761,6 +2320,192 @@ class HackConvo {
             window.location.href = 'login.html';
         }, 1000);
     }
+
+    addAdminPanelButton() {
+        // Check if user is admin or moderator
+        if (this.currentUser && (this.currentUser.role === 'admin' || this.currentUser.role === 'moderator')) {
+            console.log(`[ADMIN DEBUG] Adding admin panel button for ${this.currentUser.role}:`, this.currentUser.username);
+            
+            // Add admin button to header
+            const headerControls = document.querySelector('.header-controls');
+            if (headerControls) {
+                const adminBtn = document.createElement('button');
+                adminBtn.id = 'admin-btn';
+                adminBtn.className = `header-btn admin-btn ${this.currentUser.role === 'moderator' ? 'moderator-btn' : ''}`;
+                adminBtn.innerHTML = '<i class="fas fa-shield-alt"></i>';
+                adminBtn.title = `${this.currentUser.role === 'admin' ? 'Admin' : 'Moderator'} Panel`;
+                adminBtn.addEventListener('click', () => {
+                    window.location.href = 'admin.html';
+                });
+                
+                // Insert before the first button
+                headerControls.insertBefore(adminBtn, headerControls.firstChild);
+            }
+            
+            // Add admin link to user menu
+            const userMenu = document.getElementById('user-menu');
+            if (userMenu) {
+                const adminLink = document.createElement('a');
+                adminLink.href = 'admin.html';
+                adminLink.innerHTML = `<i class="fas fa-shield-alt"></i> ${this.currentUser.role === 'admin' ? 'Admin' : 'Moderator'} Panel`;
+                adminLink.className = 'user-menu-item';
+                userMenu.appendChild(adminLink);
+            }
+        }
+    }
+
+    // Check if user is muted or banned
+    async checkUserStatus() {
+        if (!this.currentUser || !this.database || !this.ref || !this.get) return;
+        
+        try {
+            // Check moderation status from Firebase
+            const moderationRef = this.ref(this.database, 'moderation');
+            const snapshot = await this.get(moderationRef);
+            
+            if (snapshot.exists()) {
+                const moderationData = snapshot.val();
+                
+                // Check if user is banned
+                if (moderationData.banned && moderationData.banned[this.currentUser.username]) {
+                    const banData = moderationData.banned[this.currentUser.username];
+                    if (banData.expiresAt && Date.now() > banData.expiresAt) {
+                        // Ban has expired, remove it
+                        await this.removeBanStatus();
+                    } else {
+                        this.currentUser.isBanned = true;
+                        this.currentUser.banData = banData;
+                        this.saveUser(this.currentUser);
+                        this.showBanMessage(banData);
+                        return;
+                    }
+                } else {
+                    // Clear ban status if no longer banned
+                    if (this.currentUser.isBanned) {
+                        delete this.currentUser.isBanned;
+                        delete this.currentUser.banData;
+                        this.saveUser(this.currentUser);
+                    }
+                }
+                
+                // Check if user is muted
+                if (moderationData.muted && moderationData.muted[this.currentUser.username]) {
+                    const muteData = moderationData.muted[this.currentUser.username];
+                    if (muteData.expiresAt && Date.now() > muteData.expiresAt) {
+                        // Mute has expired, remove it
+                        await this.removeMuteStatus();
+                    } else {
+                        this.currentUser.isMuted = true;
+                        this.currentUser.muteData = muteData;
+                        this.saveUser(this.currentUser);
+                        this.showMuteMessage(muteData);
+                    }
+                } else {
+                    // Clear mute status if no longer muted
+                    if (this.currentUser.isMuted) {
+                        delete this.currentUser.isMuted;
+                        delete this.currentUser.muteData;
+                        this.saveUser(this.currentUser);
+                        this.enableMessageSending();
+                    }
+                }
+            }
+        } catch (error) {
+            console.error('[DEBUG] Error checking user status:', error);
+        }
+    }
+
+    showBanMessage(banData) {
+        const message = `You have been banned${banData.reason ? `: ${banData.reason}` : ''}.`;
+        this.showNotification(message, 'error');
+        
+        // Disable chat functionality
+        this.disableChat();
+        
+        // Redirect to login after showing message
+        setTimeout(() => {
+            this.logout();
+        }, 3000);
+    }
+
+    showMuteMessage(muteData) {
+        const expiresAt = muteData.expiresAt ? new Date(muteData.expiresAt).toLocaleString() : 'Never';
+        const message = `You have been muted${muteData.reason ? `: ${muteData.reason}` : ''}. Expires: ${expiresAt}`;
+        this.showNotification(message, 'warning');
+        
+        // Disable message sending
+        this.disableMessageSending();
+    }
+
+    disableChat() {
+        const messageInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        
+        if (messageInput) messageInput.disabled = true;
+        if (sendBtn) sendBtn.disabled = true;
+    }
+
+    disableMessageSending() {
+        const messageInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        
+        if (messageInput) {
+            messageInput.disabled = true;
+            messageInput.placeholder = 'You are muted and cannot send messages';
+        }
+        if (sendBtn) sendBtn.disabled = true;
+    }
+
+    enableMessageSending() {
+        const messageInput = document.getElementById('message-input');
+        const sendBtn = document.getElementById('send-btn');
+        
+        if (messageInput) {
+            messageInput.disabled = false;
+            messageInput.placeholder = 'Type your message...';
+        }
+        if (sendBtn) sendBtn.disabled = false;
+    }
+
+    async removeBanStatus() {
+        try {
+            if (this.database && this.ref && this.set) {
+                const userRef = this.ref(this.database, `registered_users/${this.currentUser.username}`);
+                delete this.currentUser.isBanned;
+                delete this.currentUser.banData;
+                await this.set(userRef, this.currentUser);
+                this.saveUser(this.currentUser);
+                this.showNotification('Your ban has been lifted!', 'success');
+            }
+        } catch (error) {
+            console.error('[ADMIN DEBUG] Error removing ban status:', error);
+        }
+    }
+
+    async removeMuteStatus() {
+        try {
+            if (this.database && this.ref && this.set) {
+                const userRef = this.ref(this.database, `registered_users/${this.currentUser.username}`);
+                delete this.currentUser.isMuted;
+                delete this.currentUser.muteData;
+                await this.set(userRef, this.currentUser);
+                this.saveUser(this.currentUser);
+                this.showNotification('You are no longer muted!', 'success');
+                
+                // Re-enable message sending
+                const messageInput = document.getElementById('message-input');
+                const sendBtn = document.getElementById('send-btn');
+                
+                if (messageInput) {
+                    messageInput.disabled = false;
+                    messageInput.placeholder = 'Type your message...';
+                }
+                if (sendBtn) sendBtn.disabled = false;
+            }
+        } catch (error) {
+            console.error('[ADMIN DEBUG] Error removing mute status:', error);
+        }
+    }
 }
 
 // Global functions
@@ -1879,3 +2624,16 @@ document.addEventListener('visibilitychange', () => {
         document.title = 'HackConvo - Public Chat';
     }
 });
+
+// Global function to hide registration banner
+function hideRegistrationBanner() {
+    if (window.app) {
+        app.hideRegistrationBanner();
+    } else {
+        const banner = document.getElementById('registration-banner');
+        if (banner) {
+            banner.style.display = 'none';
+            localStorage.setItem('registration_banner_dismissed', 'true');
+        }
+    }
+}

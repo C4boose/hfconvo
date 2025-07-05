@@ -200,7 +200,8 @@ class HackConvoAuth {
                 avatar: `https://ui-avatars.com/api/?name=${username}&background=333&color=fff`,
                 createdAt: Date.now(),
                 lastLogin: Date.now(),
-                status: 'online'
+                status: 'online',
+                role: 'user' // Default role: user, moderator, admin
             };
             
             console.log('[AUTH DEBUG] User data created:', userData);
