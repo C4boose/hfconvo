@@ -62,7 +62,8 @@ class HackConvoAuth {
             loginForm.addEventListener('submit', (e) => {
                 e.preventDefault();
                 console.log('[AUTH DEBUG] Login form submitted');
-                this.handleLogin();
+                // Add small delay to ensure Firebase is ready
+                setTimeout(() => this.handleLogin(), 100);
             });
         } else {
             console.log('[AUTH DEBUG] Login form not found');
@@ -242,6 +243,16 @@ class HackConvoAuth {
     async handleLogin() {
         console.log('[AUTH DEBUG] Starting login...');
         
+        // Check if Firebase is ready
+        if (!this.database || !this.ref || !this.get) {
+            console.error('[AUTH DEBUG] Firebase not ready for login');
+            const errorElement = document.getElementById('login-error');
+            if (errorElement) {
+                this.showError(errorElement, document.getElementById('login-username'), 'System not ready. Please try again.');
+            }
+            return;
+        }
+        
         const username = document.getElementById('login-username').value.trim();
         const password = document.getElementById('login-password').value;
         const errorElement = document.getElementById('login-error');
@@ -249,6 +260,8 @@ class HackConvoAuth {
         
         console.log('[AUTH DEBUG] Username:', username);
         console.log('[AUTH DEBUG] Password length:', password.length);
+        console.log('[AUTH DEBUG] Error element found:', !!errorElement);
+        console.log('[AUTH DEBUG] Submit button found:', !!submitBtn);
         
         // Validate inputs
         if (!username || !password) {
@@ -263,11 +276,16 @@ class HackConvoAuth {
         
         try {
             console.log('[AUTH DEBUG] Getting user from Firebase...');
-            // Get user from Firebase
-            const usersRef = this.ref(this.database, 'registered_users');
-            const userRef = this.ref(usersRef, username);
-            const snapshot = await this.get(userRef);
+            console.log('[AUTH DEBUG] Database object:', this.database);
+            console.log('[AUTH DEBUG] Ref function:', this.ref);
+            console.log('[AUTH DEBUG] Get function:', this.get);
             
+            // Get user from Firebase - use direct path like in registration
+            const userRef = this.ref(this.database, `registered_users/${username}`);
+            console.log('[AUTH DEBUG] User ref created:', userRef);
+            
+            const snapshot = await this.get(userRef);
+            console.log('[AUTH DEBUG] Firebase snapshot received:', snapshot);
             console.log('[AUTH DEBUG] Firebase snapshot exists:', snapshot.exists());
             
             if (!snapshot.exists()) {
