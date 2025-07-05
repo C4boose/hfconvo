@@ -25,6 +25,7 @@ class HackConvoAuth {
         
         if (window.firebaseDatabase && window.firebaseRef && window.firebasePush && window.firebaseSet && window.firebaseGet) {
             console.log('[AUTH DEBUG] Firebase is ready, setting up auth...');
+            // Store references to Firebase functions
             this.database = window.firebaseDatabase;
             this.ref = window.firebaseRef;
             this.push = window.firebasePush;
@@ -114,22 +115,41 @@ class HackConvoAuth {
 
     async checkUsernameAvailability(username, inputId) {
         try {
+            console.log('[AUTH DEBUG] Checking availability for username:', username);
+            console.log('[AUTH DEBUG] Database:', this.database);
+            console.log('[AUTH DEBUG] Ref function:', this.ref);
+            console.log('[AUTH DEBUG] Get function:', this.get);
+            
             const usersRef = this.ref(this.database, 'registered_users');
+            console.log('[AUTH DEBUG] Users ref created:', usersRef);
+            
             const userRef = this.ref(usersRef, username);
+            console.log('[AUTH DEBUG] User ref created:', userRef);
             
             const snapshot = await this.get(userRef);
+            console.log('[AUTH DEBUG] Snapshot received:', snapshot);
+            
             const errorElement = document.getElementById(inputId.replace('username', 'error'));
             const input = document.getElementById(inputId);
             
             if (snapshot.exists()) {
+                console.log('[AUTH DEBUG] Username already exists');
                 this.showError(errorElement, input, 'Username is already taken');
                 return false;
             } else {
+                console.log('[AUTH DEBUG] Username is available');
                 this.hideError(errorElement, input);
                 return true;
             }
         } catch (error) {
-            console.error('Error checking username availability:', error);
+            console.error('[AUTH DEBUG] Error checking username availability:', error);
+            console.error('[AUTH DEBUG] Error details:', {
+                message: error.message,
+                stack: error.stack,
+                database: this.database,
+                ref: this.ref,
+                get: this.get
+            });
             return true; // Allow if we can't check
         }
     }
@@ -186,9 +206,19 @@ class HackConvoAuth {
             console.log('[AUTH DEBUG] User data created:', userData);
             
             // Save to Firebase
+            console.log('[AUTH DEBUG] About to save to Firebase...');
+            console.log('[AUTH DEBUG] Database object:', this.database);
+            console.log('[AUTH DEBUG] Ref function:', this.ref);
+            console.log('[AUTH DEBUG] Set function:', this.set);
+            
             const usersRef = this.ref(this.database, 'registered_users');
+            console.log('[AUTH DEBUG] Users ref created:', usersRef);
+            
             const userRef = this.ref(usersRef, username);
+            console.log('[AUTH DEBUG] User ref created:', userRef);
+            
             console.log('[AUTH DEBUG] Saving to Firebase at path:', `registered_users/${username}`);
+            console.log('[AUTH DEBUG] User data to save:', userData);
             
             await this.set(userRef, userData);
             console.log('[AUTH DEBUG] User saved to Firebase successfully');
