@@ -7,6 +7,61 @@
     <link rel="stylesheet" href="styles.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Configuration -->
+    <script src="config.js"></script>
+    <!-- Firebase SDK for authentication -->
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getDatabase, ref, push, onValue, off, remove, child, set, get } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+        import { getAnalytics } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics.js';
+        
+        // Wait for config to be available
+        function initFirebase() {
+            if (!window.HACKCONVO_CONFIG) {
+                console.log('Config not ready, retrying in 100ms...');
+                setTimeout(initFirebase, 100);
+                return;
+            }
+            
+            console.log('Config ready, initializing Firebase for auth...');
+            console.log('Firebase config:', window.HACKCONVO_CONFIG.FIREBASE_CONFIG);
+            
+            try {
+                // Your web app's Firebase configuration
+                const firebaseConfig = window.HACKCONVO_CONFIG?.FIREBASE_CONFIG;
+                
+                if (!firebaseConfig) {
+                    console.error('Firebase configuration not found');
+                    return;
+                }
+                
+                // Initialize Firebase
+                const app = initializeApp(firebaseConfig);
+                const database = getDatabase(app);
+                const analytics = getAnalytics(app);
+                
+                // Make Firebase available globally
+                window.firebaseApp = app;
+                window.firebaseDatabase = database;
+                window.firebaseRef = ref;
+                window.firebasePush = push;
+                window.firebaseOnValue = onValue;
+                window.firebaseOff = off;
+                window.firebaseRemove = remove;
+                window.firebaseChild = child;
+                window.firebaseSet = set;
+                window.firebaseGet = get;
+                
+                console.log('Firebase initialized successfully for auth');
+            } catch (error) {
+                console.error('Failed to initialize Firebase:', error);
+            }
+        }
+        
+        // Start initialization
+        console.log('Starting Firebase initialization for auth...');
+        initFirebase();
+    </script>
 </head>
 <body>
     <div class="auth-container">
