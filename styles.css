@@ -1789,6 +1789,40 @@ body[data-theme="black"] {
   font-size: 0.98rem;
 }
 
+.auth-success {
+  color: #28a745;
+  background: #1a2e1a;
+  border-radius: 4px;
+  padding: 0.5rem 0.8rem;
+  margin-bottom: 0.7rem;
+  text-align: center;
+  font-size: 0.98rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
+.auth-success i {
+  font-size: 1.1rem;
+}
+
+/* Input validation styling */
+.auth-form input:invalid {
+  border-color: #dc3545;
+}
+
+.auth-form input:valid {
+  border-color: #28a745;
+}
+
+.auth-form small {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: #bfc9d1;
+}
+
 /* Read-only mode styling */
 .read-only-prompt {
     position: absolute;

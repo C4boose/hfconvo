@@ -15,11 +15,13 @@
             <div id="register-error" class="auth-error" style="display:none;"></div>
             <div>
                 <label for="register-username">Username</label>
-                <input type="text" id="register-username" name="username" required autocomplete="username">
+                <input type="text" id="register-username" name="username" required autocomplete="username" minlength="3" pattern="[a-zA-Z0-9_]+" title="Username must be at least 3 characters and can only contain letters, numbers, and underscores">
+                <small style="color: #bfc9d1; font-size: 0.8rem;">At least 3 characters, letters, numbers, and underscores only</small>
             </div>
             <div>
                 <label for="register-password">Password</label>
-                <input type="password" id="register-password" name="password" required autocomplete="new-password">
+                <input type="password" id="register-password" name="password" required autocomplete="new-password" minlength="6">
+                <small style="color: #bfc9d1; font-size: 0.8rem;">At least 6 characters</small>
             </div>
             <button type="submit" class="auth-btn">Register</button>
         </form>
@@ -29,5 +31,6 @@
         </div>
     </div>
     <script src="script.js"></script>
+    <script src="auth.js"></script>
 </body>
 </html> 

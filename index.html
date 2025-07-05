@@ -16,7 +16,7 @@
     <!-- Firebase SDK for real-time messaging -->
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getDatabase, ref, push, onValue, off, remove, child } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
+        import { getDatabase, ref, push, onValue, off, remove, child, set, get } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
         import { getAnalytics } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics.js';
         
         // Wait for config to be available
@@ -53,6 +53,8 @@
                 window.firebaseOff = off;
                 window.firebaseRemove = remove;
                 window.firebaseChild = child;
+                window.firebaseSet = set;
+                window.firebaseGet = get;
                 
                 console.log('Firebase initialized successfully');
             } catch (error) {
