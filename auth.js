@@ -68,13 +68,13 @@ class HackConvoAuth {
             console.log('[AUTH DEBUG] Login form not found');
         }
 
-        // Real-time validation
-        const usernameInputs = document.querySelectorAll('input[name="username"]');
-        usernameInputs.forEach(input => {
-            input.addEventListener('input', (e) => {
+        // Real-time validation - only for registration form
+        const registerUsernameInput = document.getElementById('register-username');
+        if (registerUsernameInput) {
+            registerUsernameInput.addEventListener('input', (e) => {
                 this.validateUsername(e.target.value, e.target.id);
             });
-        });
+        }
     }
 
     validateUsername(username, inputId) {
@@ -97,8 +97,10 @@ class HackConvoAuth {
             return false;
         }
         
-        // Check if username is already taken
-        this.checkUsernameAvailability(username, inputId);
+        // Only check username availability for registration form
+        if (inputId === 'register-username') {
+            this.checkUsernameAvailability(username, inputId);
+        }
         return true;
     }
 
