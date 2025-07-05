@@ -120,10 +120,7 @@ class HackConvoAuth {
             console.log('[AUTH DEBUG] Ref function:', this.ref);
             console.log('[AUTH DEBUG] Get function:', this.get);
             
-            const usersRef = this.ref(this.database, 'registered_users');
-            console.log('[AUTH DEBUG] Users ref created:', usersRef);
-            
-            const userRef = this.ref(usersRef, username);
+            const userRef = this.ref(this.database, `registered_users/${username}`);
             console.log('[AUTH DEBUG] User ref created:', userRef);
             
             const snapshot = await this.get(userRef);
@@ -205,16 +202,8 @@ class HackConvoAuth {
             
             console.log('[AUTH DEBUG] User data created:', userData);
             
-            // Save to Firebase
-            console.log('[AUTH DEBUG] About to save to Firebase...');
-            console.log('[AUTH DEBUG] Database object:', this.database);
-            console.log('[AUTH DEBUG] Ref function:', this.ref);
-            console.log('[AUTH DEBUG] Set function:', this.set);
-            
-            const usersRef = this.ref(this.database, 'registered_users');
-            console.log('[AUTH DEBUG] Users ref created:', usersRef);
-            
-            const userRef = this.ref(usersRef, username);
+            // FIX: Use correct ref syntax
+            const userRef = this.ref(this.database, `registered_users/${username}`);
             console.log('[AUTH DEBUG] User ref created:', userRef);
             
             console.log('[AUTH DEBUG] Saving to Firebase at path:', `registered_users/${username}`);
