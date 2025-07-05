@@ -16,7 +16,15 @@ class HackConvoAuth {
     }
 
     waitForFirebase() {
+        console.log('[AUTH DEBUG] Checking Firebase availability...');
+        console.log('[AUTH DEBUG] firebaseDatabase:', !!window.firebaseDatabase);
+        console.log('[AUTH DEBUG] firebaseRef:', !!window.firebaseRef);
+        console.log('[AUTH DEBUG] firebasePush:', !!window.firebasePush);
+        console.log('[AUTH DEBUG] firebaseSet:', !!window.firebaseSet);
+        console.log('[AUTH DEBUG] firebaseGet:', !!window.firebaseGet);
+        
         if (window.firebaseDatabase && window.firebaseRef && window.firebasePush && window.firebaseSet && window.firebaseGet) {
+            console.log('[AUTH DEBUG] Firebase is ready, setting up auth...');
             this.database = window.firebaseDatabase;
             this.ref = window.firebaseRef;
             this.push = window.firebasePush;
@@ -25,27 +33,38 @@ class HackConvoAuth {
             this.onValue = window.firebaseOnValue;
             this.setupEventListeners();
         } else {
+            console.log('[AUTH DEBUG] Firebase not ready, retrying...');
             setTimeout(() => this.waitForFirebase(), 100);
         }
     }
 
     setupEventListeners() {
+        console.log('[AUTH DEBUG] Setting up event listeners...');
+        
         // Registration form
         const registerForm = document.getElementById('register-form');
         if (registerForm) {
+            console.log('[AUTH DEBUG] Register form found, adding listener');
             registerForm.addEventListener('submit', (e) => {
                 e.preventDefault();
+                console.log('[AUTH DEBUG] Register form submitted');
                 this.handleRegister();
             });
+        } else {
+            console.log('[AUTH DEBUG] Register form not found');
         }
 
         // Login form
         const loginForm = document.getElementById('login-form');
         if (loginForm) {
+            console.log('[AUTH DEBUG] Login form found, adding listener');
             loginForm.addEventListener('submit', (e) => {
                 e.preventDefault();
+                console.log('[AUTH DEBUG] Login form submitted');
                 this.handleLogin();
             });
+        } else {
+            console.log('[AUTH DEBUG] Login form not found');
         }
 
         // Real-time validation
@@ -116,18 +135,25 @@ class HackConvoAuth {
     }
 
     async handleRegister() {
+        console.log('[AUTH DEBUG] Starting registration...');
+        
         const username = document.getElementById('register-username').value.trim();
         const password = document.getElementById('register-password').value;
         const errorElement = document.getElementById('register-error');
         const submitBtn = document.querySelector('#register-form .auth-btn');
         
+        console.log('[AUTH DEBUG] Username:', username);
+        console.log('[AUTH DEBUG] Password length:', password.length);
+        
         // Validate username
         if (!this.validateUsername(username, 'register-username')) {
+            console.log('[AUTH DEBUG] Username validation failed');
             return;
         }
         
         // Validate password
         if (password.length < 6) {
+            console.log('[AUTH DEBUG] Password validation failed');
             this.showError(errorElement, document.getElementById('register-password'), 'Password must be at least 6 characters long');
             return;
         }
@@ -137,9 +163,11 @@ class HackConvoAuth {
         submitBtn.textContent = 'Registering...';
         
         try {
+            console.log('[AUTH DEBUG] Checking username availability...');
             // Check if username is available
             const isAvailable = await this.checkUsernameAvailability(username, 'register-username');
             if (!isAvailable) {
+                console.log('[AUTH DEBUG] Username not available');
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Register';
                 return;
@@ -155,27 +183,35 @@ class HackConvoAuth {
                 status: 'online'
             };
             
+            console.log('[AUTH DEBUG] User data created:', userData);
+            
             // Save to Firebase
             const usersRef = this.ref(this.database, 'registered_users');
             const userRef = this.ref(usersRef, username);
+            console.log('[AUTH DEBUG] Saving to Firebase at path:', `registered_users/${username}`);
+            
             await this.set(userRef, userData);
+            console.log('[AUTH DEBUG] User saved to Firebase successfully');
             
             // Save to localStorage for immediate access
             localStorage.setItem('hackconvo_user', JSON.stringify({
                 ...userData,
                 isRegistered: true
             }));
+            console.log('[AUTH DEBUG] User saved to localStorage');
             
             // Show success message
+            console.log('[AUTH DEBUG] Showing success message');
             this.showSuccessMessage('Registration successful! Redirecting to chat...');
             
             // Redirect to chat after 2 seconds
             setTimeout(() => {
+                console.log('[AUTH DEBUG] Redirecting to chat...');
                 window.location.href = 'index.html';
             }, 2000);
             
         } catch (error) {
-            console.error('Registration error:', error);
+            console.error('[AUTH DEBUG] Registration error:', error);
             this.showError(errorElement, document.getElementById('register-username'), 'Registration failed. Please try again.');
             submitBtn.disabled = false;
             submitBtn.textContent = 'Register';
@@ -183,13 +219,19 @@ class HackConvoAuth {
     }
 
     async handleLogin() {
+        console.log('[AUTH DEBUG] Starting login...');
+        
         const username = document.getElementById('login-username').value.trim();
         const password = document.getElementById('login-password').value;
         const errorElement = document.getElementById('login-error');
         const submitBtn = document.querySelector('#login-form .auth-btn');
         
+        console.log('[AUTH DEBUG] Username:', username);
+        console.log('[AUTH DEBUG] Password length:', password.length);
+        
         // Validate inputs
         if (!username || !password) {
+            console.log('[AUTH DEBUG] Missing username or password');
             this.showError(errorElement, document.getElementById('login-username'), 'Please enter both username and password');
             return;
         }
@@ -199,12 +241,16 @@ class HackConvoAuth {
         submitBtn.textContent = 'Logging in...';
         
         try {
+            console.log('[AUTH DEBUG] Getting user from Firebase...');
             // Get user from Firebase
             const usersRef = this.ref(this.database, 'registered_users');
             const userRef = this.ref(usersRef, username);
             const snapshot = await this.get(userRef);
             
+            console.log('[AUTH DEBUG] Firebase snapshot exists:', snapshot.exists());
+            
             if (!snapshot.exists()) {
+                console.log('[AUTH DEBUG] User not found in database');
                 this.showError(errorElement, document.getElementById('login-username'), 'Invalid username or password');
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Login';
@@ -212,15 +258,21 @@ class HackConvoAuth {
             }
             
             const userData = snapshot.val();
+            console.log('[AUTH DEBUG] User data retrieved:', userData);
             
             // Check password
-            if (userData.password !== this.hashPassword(password)) {
+            const hashedPassword = this.hashPassword(password);
+            console.log('[AUTH DEBUG] Password check - stored:', userData.password, 'input:', hashedPassword);
+            
+            if (userData.password !== hashedPassword) {
+                console.log('[AUTH DEBUG] Password mismatch');
                 this.showError(errorElement, document.getElementById('login-password'), 'Invalid username or password');
                 submitBtn.disabled = false;
                 submitBtn.textContent = 'Login';
                 return;
             }
             
+            console.log('[AUTH DEBUG] Password correct, updating last login...');
             // Update last login
             await this.set(userRef, {
                 ...userData,
@@ -233,17 +285,20 @@ class HackConvoAuth {
                 ...userData,
                 isRegistered: true
             }));
+            console.log('[AUTH DEBUG] User saved to localStorage');
             
             // Show success message
+            console.log('[AUTH DEBUG] Showing success message');
             this.showSuccessMessage('Login successful! Redirecting to chat...');
             
             // Redirect to chat after 2 seconds
             setTimeout(() => {
+                console.log('[AUTH DEBUG] Redirecting to chat...');
                 window.location.href = 'index.html';
             }, 2000);
             
         } catch (error) {
-            console.error('Login error:', error);
+            console.error('[AUTH DEBUG] Login error:', error);
             this.showError(errorElement, document.getElementById('login-username'), 'Login failed. Please try again.');
             submitBtn.disabled = false;
             submitBtn.textContent = 'Login';
@@ -262,6 +317,8 @@ class HackConvoAuth {
     }
 
     showSuccessMessage(message) {
+        console.log('[AUTH DEBUG] Showing success message:', message);
+        
         // Create success message element
         const successDiv = document.createElement('div');
         successDiv.className = 'auth-success';
@@ -281,7 +338,12 @@ class HackConvoAuth {
         
         // Insert at the top of the form
         const form = document.querySelector('.auth-form');
-        form.insertBefore(successDiv, form.firstChild);
+        if (form) {
+            console.log('[AUTH DEBUG] Form found, inserting success message');
+            form.insertBefore(successDiv, form.firstChild);
+        } else {
+            console.error('[AUTH DEBUG] Form not found for success message');
+        }
         
         // Remove after 3 seconds
         setTimeout(() => {
