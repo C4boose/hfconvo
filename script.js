@@ -2,6 +2,20 @@
 class HackConvo {
     constructor() {
         this.currentUser = this.loadUser();
+        
+        // Handle unregistered users
+        if (!this.currentUser) {
+            console.log('User not registered - enabling read-only mode');
+            this.isReadOnly = true;
+        } else {
+            // Ensure currentUser has all required properties
+            if (!this.currentUser.avatar) {
+                this.currentUser.avatar = `https://ui-avatars.com/api/?name=${this.currentUser.username}&background=333&color=fff`;
+                this.saveUser(this.currentUser);
+            }
+            this.isReadOnly = false;
+        }
+        
         this.messages = [];
         this.onlineUsers = new Map();
         this.activeStreams = new Map();
@@ -33,40 +47,61 @@ class HackConvo {
     }
 
     init() {
+        console.log('Initializing HackConvo with user:', this.currentUser);
+        
+        // Prevent multiple initializations
+        if (this.initialized) {
+            console.log('Already initialized, skipping...');
+            return;
+        }
+        this.initialized = true;
+        
         this.setupEventListeners();
         this.setupMediaControls();
         this.setupHeaderControls();
         this.loadMessages();
-        this.initUserProfile();
-        this.connectWebSocket();
-        this.setupTypingIndicator();
+        
+        if (this.isReadOnly) {
+            this.setupReadOnlyMode();
+        } else {
+            this.initUserProfile();
+            this.connectWebSocket();
+            this.setupTypingIndicator();
+        }
         
         // Load saved theme
         const savedTheme = localStorage.getItem('theme') || 'dark';
         this.setTheme(savedTheme);
         
-        // Firebase will handle rseal-time users and messages
+        // Firebase will handle real-time users and messages
     }
 
     connectWebSocket() {
+        console.log('[DEBUG] Attempting to connect to Firebase...');
+        console.log('[DEBUG] Firebase database available:', !!window.firebaseDatabase);
+        console.log('[DEBUG] Firebase ref available:', !!window.firebaseRef);
+        
         try {
             // Wait for Firebase to be available
-            if (window.firebaseDatabase) {
+            if (window.firebaseDatabase && window.firebaseRef) {
+                console.log('[DEBUG] Firebase is ready, connecting...');
                 this.connectFirebase();
             } else {
+                console.log('[DEBUG] Firebase not ready, waiting...');
                 // Wait a bit for Firebase to load
                 setTimeout(() => {
-                    if (window.firebaseDatabase) {
+                    if (window.firebaseDatabase && window.firebaseRef) {
+                        console.log('[DEBUG] Firebase is now ready, connecting...');
                         this.connectFirebase();
                     } else {
-                        console.error('Firebase not available');
+                        console.error('[DEBUG] Firebase not available after timeout, enabling simulated mode');
                         this.updateConnectionStatus(false);
                         this.enableSimulatedMode();
                     }
-                }, 1000);
+                }, 2000); // Increased timeout
             }
         } catch (error) {
-            console.error('Failed to connect:', error);
+            console.error('[DEBUG] Failed to connect:', error);
             this.updateConnectionStatus(false);
             this.enableSimulatedMode();
         }
@@ -105,8 +140,10 @@ class HackConvo {
                 }
             });
             
-            // Add current user to online users
-            this.addUserToFirebase();
+            // Add current user to online users (only if registered)
+            if (!this.isReadOnly) {
+                this.addUserToFirebase();
+            }
             
             // Start periodic cleanup of old messages
             this.startPeriodicCleanup();
@@ -120,33 +157,32 @@ class HackConvo {
 
     startPeriodicCleanup() {
         // Clean up old messages based on config
-        const cleanupInterval = window.HACKCONVO_CONFIG?.CLEANUP_INTERVAL_MINUTES || 60;
+        const cleanupInterval = 10; // minutes (was: window.HACKCONVO_CONFIG?.CLEANUP_INTERVAL_MINUTES || 60)
         setInterval(() => {
             if (this.messagesRef) {
+                console.log('[DEBUG] Running periodic message cleanup...');
                 this.performPeriodicCleanup();
             }
-        }, cleanupInterval * 60 * 1000); // Based on config
+        }, cleanupInterval * 60 * 1000); // Every 10 minutes
     }
 
     performPeriodicCleanup() {
         const retentionHours = window.HACKCONVO_CONFIG?.MESSAGE_RETENTION_HOURS || 4;
         const cutoffTime = Date.now() - (retentionHours * 60 * 60 * 1000);
-        
         this.onValue(this.messagesRef, (snapshot) => {
             const data = snapshot.val();
             if (data) {
-                const messages = Object.values(data);
-                const oldMessages = messages.filter(message => message.timestamp < cutoffTime);
-                
+                const messages = Object.entries(data);
+                const oldMessages = messages.filter(([key, message]) => message.timestamp < cutoffTime);
                 if (oldMessages.length > 0 && this.remove && this.child) {
-                    console.log(`Periodic cleanup: removing ${oldMessages.length} old messages`);
-                    
-                    oldMessages.forEach(message => {
-                        if (message.key) {
-                            const messageRef = this.child(this.messagesRef, message.key);
-                            this.remove(messageRef);
-                        }
+                    console.log(`[DEBUG] Periodic cleanup: removing ${oldMessages.length} old messages`);
+                    oldMessages.forEach(([key, message]) => {
+                        const messageRef = this.child(this.messagesRef, key);
+                        this.remove(messageRef);
+                        console.log('[DEBUG] Deleted message:', key, message);
                     });
+                } else {
+                    console.log('[DEBUG] No old messages to clean up.');
                 }
             }
         }, { onlyOnce: true });
@@ -198,19 +234,53 @@ class HackConvo {
     }
 
     sendFirebaseMessage(message) {
-        if (this.push && this.messagesRef) {
-            this.push(this.messagesRef, message);
+        if (!this.push || !this.messagesRef) {
+            console.log('Firebase not available, message sent locally only');
+            return;
         }
+        this.push(this.messagesRef, message).then(() => {
+            // After sending, clean up old messages
+            this.onValue(this.messagesRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    const entries = Object.entries(data).sort((a, b) => a[1].timestamp - b[1].timestamp);
+                    if (entries.length > 20 && this.remove && this.child) {
+                        const toDelete = entries.slice(0, entries.length - 20);
+                        toDelete.forEach(([key, msg]) => {
+                            const messageRef = this.child(this.messagesRef, key);
+                            this.remove(messageRef);
+                            console.log('[DEBUG] Deleted old message to keep last 20:', key, msg);
+                        });
+                    }
+                }
+            }, { onlyOnce: true });
+        });
     }
 
     addUserToFirebase() {
-        if (this.push && this.usersRef) {
-            const userRef = this.ref(this.database, `users/${this.currentUser.username}`);
-            this.push(userRef, {
+        if (this.ref && this.database) {
+            // Generate a unique session ID for this session
+            if (!this.sessionId) {
+                this.sessionId = this.generateId();
+            }
+            const userPath = `users/${this.currentUser.username}/${this.sessionId}`;
+            const userRef = this.ref(this.database, userPath);
+            const userData = {
                 ...this.currentUser,
                 lastSeen: Date.now(),
-                status: 'online'
+                status: 'online',
+                sessionId: this.sessionId
+            };
+            console.log('[DEBUG] Adding user to Firebase at', userPath, userData);
+            // Use set() instead of push()
+            import('https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js').then(({ set, onDisconnect }) => {
+                set(userRef, userData).then(() => {
+                    onDisconnect(userRef).remove();
+                    console.log('[DEBUG] onDisconnect set for user session:', userPath);
+                });
             });
+        } else {
+            console.warn('[DEBUG] addUserToFirebase: ref or database not available');
         }
     }
 
@@ -280,16 +350,84 @@ class HackConvo {
     }
 
     handleFirebaseUsers(data) {
-        // Convert Firebase object to array
-        const users = Object.values(data);
+        console.log('[DEBUG] handleFirebaseUsers received data:', data);
+        // Flatten all user objects from all subkeys
+        const users = [];
+        const now = Date.now();
+        const ONLINE_THRESHOLD = 30 * 1000; // 30 seconds
+        Object.values(data).forEach(userGroup => {
+            if (typeof userGroup === 'object') {
+                Object.values(userGroup).forEach(userObj => {
+                    if (
+                        userObj &&
+                        userObj.username &&
+                        userObj.lastSeen &&
+                        (now - userObj.lastSeen < ONLINE_THRESHOLD)
+                    ) {
+                        users.push(userObj);
+                    }
+                });
+            }
+        });
         
         // Clear current online users
         this.onlineUsers.clear();
         
-        // Add all users
+        // Add all users, but handle duplicates by preferring users with session IDs
+        console.log('[DEBUG] Adding users to onlineUsers Map:');
+        const userMap = new Map(); // Temporary map to handle duplicates
+        
         users.forEach(user => {
-            this.onlineUsers.set(user.username, user);
+            const key = user.username + ':' + (user.sessionId || '');
+            console.log('- Processing user:', user.username, 'with key:', key);
+            
+            // If we already have this user, prefer the one with a session ID
+            const existingUser = userMap.get(user.username);
+            if (existingUser) {
+                if (user.sessionId && !existingUser.sessionId) {
+                    // New user has session ID, existing doesn't - replace
+                    console.log('- Replacing user without session ID with user that has session ID');
+                    userMap.set(user.username, user);
+                } else if (!user.sessionId && existingUser.sessionId) {
+                    // Existing user has session ID, new doesn't - keep existing
+                    console.log('- Keeping existing user with session ID');
+                } else {
+                    // Both have or don't have session ID - keep the newer one
+                    if (user.lastSeen > existingUser.lastSeen) {
+                        console.log('- Replacing with newer user');
+                        userMap.set(user.username, user);
+                    } else {
+                        console.log('- Keeping existing user (newer)');
+                    }
+                }
+            } else {
+                // First time seeing this user
+                console.log('- Adding new user:', user.username);
+                userMap.set(user.username, user);
+            }
         });
+        
+        // Now add to onlineUsers Map with proper keys
+        userMap.forEach(user => {
+            const key = user.username + ':' + (user.sessionId || '');
+            console.log('- Final add to onlineUsers:', user.username, 'with key:', key);
+            this.onlineUsers.set(key, user);
+        });
+        
+        // Ensure current user is in the online users list if they're online
+        const currentUserInList = users.find(user => user.username === this.currentUser.username);
+        console.log('[DEBUG] Current user in Firebase data:', !!currentUserInList);
+        if (!currentUserInList) {
+            // Add current user if they're not in the Firebase data but should be online
+            const currentUserKey = this.currentUser.username + ':' + (this.sessionId || '');
+            console.log('- Adding current user with key:', currentUserKey);
+            this.onlineUsers.set(currentUserKey, {
+                ...this.currentUser,
+                lastSeen: Date.now(),
+                status: 'online',
+                sessionId: this.sessionId
+            });
+        }
         
         // Update UI
         this.renderOnlineUsers();
@@ -401,14 +539,19 @@ class HackConvo {
     }
 
     enableSimulatedMode() {
-        this.showNotification('Firebase connection failed. Please check your internet connection.', 'error');
+        console.warn('[DEBUG] enableSimulatedMode called: entering simulated mode');
+        this.showNotification('Firebase connection failed. Using simulated mode.', 'warning');
         this.updateConnectionStatus(false);
+        
+        // Add simulated users for demo purposes
+        this.loadSimulatedOnlineUsers();
+        this.updateOnlineCount();
     }
 
     startHeartbeat() {
         this.heartbeatInterval = setInterval(() => {
             // Update user's last seen timestamp
-            if (this.push && this.usersRef) {
+            if (this.push && this.usersRef && this.database) {
                 const userRef = this.ref(this.database, `users/${this.currentUser.username}`);
                 this.push(userRef, {
                     ...this.currentUser,
@@ -591,23 +734,28 @@ class HackConvo {
     loadUser() {
         const savedUser = localStorage.getItem('hackconvo_user');
         if (savedUser) {
-            return JSON.parse(savedUser);
+            try {
+                const user = JSON.parse(savedUser);
+                console.log('Loaded saved user:', user);
+                
+                // Ensure the user has all required properties
+                if (!user.avatar) {
+                    user.avatar = `https://ui-avatars.com/api/?name=${user.username}&background=333&color=fff`;
+                    this.saveUser(user);
+                }
+                
+                // Mark as registered
+                user.isRegistered = true;
+                return user;
+            } catch (error) {
+                console.error('Error parsing saved user:', error);
+                localStorage.removeItem('hackconvo_user');
+            }
         }
         
-        // Generate random user
-        const names = ['CyberNinja', 'CodeBreaker', 'DigitalGhost', 'HackerElite', 'CryptoMaster', 'ByteBandit', 'NetPhantom', 'CodeWizard'];
-        const randomName = names[Math.floor(Math.random() * names.length)] + Math.floor(Math.random() * 1000);
-        
-        const user = {
-            id: this.generateId(),
-            username: randomName,
-            avatar: `https://ui-avatars.com/api/?name=${randomName}&background=333&color=fff`,
-            status: 'online',
-            joinedAt: Date.now()
-        };
-        
-        this.saveUser(user);
-        return user;
+        // Return null for unregistered users (no auto-generated user)
+        console.log('No registered user found - read-only mode');
+        return null;
     }
 
     saveUser(user) {
@@ -647,9 +795,96 @@ class HackConvo {
         });
     }
 
+    setupReadOnlyMode() {
+        console.log('Setting up read-only mode');
+        
+        // Update header to show "Guest" status
+        document.getElementById('header-username').textContent = 'Guest';
+        document.getElementById('user-avatar').src = 'https://ui-avatars.com/api/?name=Guest&background=666&color=fff';
+        document.getElementById('user-status-text').textContent = 'Read Only';
+        
+        // Disable message input and show registration prompt
+        const messageInput = document.getElementById('message-input');
+        const inputContainer = document.querySelector('.input-container');
+        const sendBtn = document.getElementById('send-btn');
+        
+        // Disable input
+        messageInput.disabled = true;
+        messageInput.placeholder = 'Register to start chatting...';
+        sendBtn.disabled = true;
+        
+        // Add clickable placeholder text
+        const placeholderText = document.createElement('div');
+        placeholderText.className = 'clickable-placeholder';
+        placeholderText.innerHTML = '<a href="register.html">Register to start chatting...</a>';
+        placeholderText.style.cssText = `
+            position: absolute;
+            top: 50%;
+            left: 1rem;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            pointer-events: none;
+            z-index: 5;
+        `;
+        
+        // Make the link clickable
+        const link = placeholderText.querySelector('a');
+        link.style.cssText = `
+            color: var(--accent-primary);
+            text-decoration: none;
+            pointer-events: auto;
+            cursor: pointer;
+        `;
+        link.addEventListener('click', (e) => {
+            e.preventDefault();
+            window.location.href = 'register.html';
+        });
+        
+        inputContainer.appendChild(placeholderText);
+        
+        // Add registration prompt overlay
+        const promptOverlay = document.createElement('div');
+        promptOverlay.className = 'read-only-prompt';
+        promptOverlay.innerHTML = `
+            <div class="prompt-content">
+                <i class="fas fa-user-plus"></i>
+                <h3>Join the Conversation</h3>
+                <p>Register to start chatting with other developers</p>
+                <div class="prompt-buttons">
+                    <a href="register.html" class="btn btn-primary">Register</a>
+                    <a href="login.html" class="btn btn-secondary">Login</a>
+                </div>
+            </div>
+        `;
+        
+        inputContainer.appendChild(promptOverlay);
+        
+        // Connect to Firebase for read-only access (messages and users)
+        this.connectWebSocket();
+    }
+
     initUserProfile() {
+        console.log('Initializing user profile with:', this.currentUser);
+        
+        if (!this.currentUser || !this.currentUser.username) {
+            console.error('Current user is invalid:', this.currentUser);
+            return;
+        }
+        
         document.getElementById('header-username').textContent = this.currentUser.username;
-        document.getElementById('user-avatar').src = this.currentUser.avatar;
+        
+        // Ensure avatar URL is valid
+        const avatarUrl = this.currentUser.avatar || `https://ui-avatars.com/api/?name=${this.currentUser.username}&background=333&color=fff`;
+        console.log('Setting avatar URL:', avatarUrl);
+        
+        // Double-check the URL is valid
+        if (avatarUrl && avatarUrl !== 'undefined' && !avatarUrl.includes('undefined')) {
+            document.getElementById('user-avatar').src = avatarUrl;
+        } else {
+            console.error('Invalid avatar URL:', avatarUrl);
+            document.getElementById('user-avatar').src = `https://ui-avatars.com/api/?name=${this.currentUser.username}&background=333&color=fff`;
+        }
+        
         document.getElementById('user-status-text').textContent = 'Online';
     }
 
@@ -1042,27 +1277,109 @@ class HackConvo {
     }
 
     loadSimulatedOnlineUsers() {
-        // This function is no longer needed - Firebase handles real users
-        console.log('Real-time users will be loaded from Firebase');
+        console.log('[DEBUG] loadSimulatedOnlineUsers called');
+        // Add some simulated users for demo when Firebase is not available
+        const simulatedUsers = [
+            {
+                username: 'alice_dev',
+                avatar: 'https://ui-avatars.com/api/?name=alice_dev&background=007bff&color=fff',
+                status: 'online',
+                lastSeen: Date.now()
+            },
+            {
+                username: 'bob_coder',
+                avatar: 'https://ui-avatars.com/api/?name=bob_coder&background=28a745&color=fff',
+                status: 'online',
+                lastSeen: Date.now()
+            },
+            {
+                username: 'charlie_tech',
+                avatar: 'https://ui-avatars.com/api/?name=charlie_tech&background=dc3545&color=fff',
+                status: 'online',
+                lastSeen: Date.now()
+            },
+            {
+                username: 'diana_hacker',
+                avatar: 'https://ui-avatars.com/api/?name=diana_hacker&background=ffc107&color=000',
+                status: 'online',
+                lastSeen: Date.now()
+            }
+        ];
+        console.log('[DEBUG] Simulated users:', simulatedUsers);
+        
+        // Clear current users and add simulated ones
+        this.onlineUsers.clear();
+        simulatedUsers.forEach(user => {
+            if (user.username && user.username !== 'undefined') {
+                console.log('[DEBUG] Adding simulated user:', user.username);
+                this.onlineUsers.set(user.username, user);
+            }
+        });
+        
+        // Add current user if valid
+        console.log('[DEBUG] Current user:', this.currentUser);
+        if (this.currentUser && this.currentUser.username && this.currentUser.username !== 'undefined') {
+            console.log('[DEBUG] Adding current user:', this.currentUser.username);
+            this.onlineUsers.set(this.currentUser.username, this.currentUser);
+        }
+        
+        // Update UI
+        this.renderOnlineUsers();
+        this.updateOnlineCount();
     }
 
     renderOnlineUsers() {
         const usersList = document.getElementById('online-users-list');
         usersList.innerHTML = '';
         
-        this.onlineUsers.forEach(user => {
-            if (user.username !== this.currentUser.username) {
-                const userItem = document.createElement('div');
-                userItem.className = 'user-item';
-                userItem.innerHTML = `
-                    <img src="${user.avatar}" alt="${user.username}">
-                    <div class="user-info">
-                        <div class="user-name">${user.username}</div>
-                        <div class="user-status">${user.status}</div>
-                    </div>
-                `;
-                usersList.appendChild(userItem);
+        // Create a combined list of all users including current user
+        const allUsers = Array.from(this.onlineUsers.values());
+        
+        // Check if current user is already in the Firebase data
+        const currentUserInList = allUsers.find(user => user.username === this.currentUser.username);
+        
+        // Only add current user if they're not already in the Firebase data
+        if (!currentUserInList) {
+            allUsers.push({
+                ...this.currentUser,
+                status: 'online',
+                lastSeen: Date.now()
+            });
+        }
+        
+        // Sort users alphabetically
+        allUsers.sort((a, b) => a.username.localeCompare(b.username));
+        
+        // Use a Set to track usernames and avoid duplicates
+        const seenUsernames = new Set();
+        
+        allUsers.forEach(user => {
+            // Skip users with missing or invalid usernames
+            if (!user.username || user.username === 'undefined') return;
+            
+            // Skip if we've already seen this username
+            if (seenUsernames.has(user.username)) return;
+            seenUsernames.add(user.username);
+            
+            const userItem = document.createElement('div');
+            userItem.className = 'user-item';
+            
+            // Add special styling for current user
+            if (user.username === this.currentUser.username) {
+                userItem.classList.add('current-user');
             }
+            
+            // Ensure avatar URL is valid
+            const avatarUrl = user.avatar || `https://ui-avatars.com/api/?name=${user.username}&background=333&color=fff`;
+            
+            userItem.innerHTML = `
+                <img src="${avatarUrl}" alt="${user.username}" onerror="this.src='https://ui-avatars.com/api/?name=${user.username}&background=333&color=fff'">
+                <div class="user-info">
+                    <div class="user-name">${user.username}${user.username === this.currentUser.username ? ' (You)' : ''}</div>
+                    <div class="user-status">${user.status || 'online'}</div>
+                </div>
+            `;
+            usersList.appendChild(userItem);
         });
     }
 
@@ -1080,27 +1397,21 @@ class HackConvo {
     }
 
     loadRecentMessages() {
-        // Load messages from the last configured retention time
-        const retentionHours = window.HACKCONVO_CONFIG?.MESSAGE_RETENTION_HOURS || 4;
-        const cutoffTime = Date.now() - (retentionHours * 60 * 60 * 1000);
-        
         this.onValue(this.messagesRef, (snapshot) => {
             const data = snapshot.val();
             if (data) {
+                // Sort messages by timestamp and keep only the last 20
                 const messages = Object.values(data).sort((a, b) => a.timestamp - b.timestamp);
-                const recentMessages = messages.filter(message => message.timestamp > cutoffTime);
-                
+                const last20 = messages.slice(-20);
                 // Only load messages we haven't seen yet
                 const existingIds = this.messages.map(m => m.id);
-                const newMessages = recentMessages.filter(message => !existingIds.includes(message.id));
-                
+                const newMessages = last20.filter(message => !existingIds.includes(message.id));
                 newMessages.forEach(message => {
                     this.messages.push({
                         ...message,
                         own: message.author === this.currentUser.username
                     });
                 });
-                
                 this.renderMessages();
             }
         }, { onlyOnce: true }); // Only load once, not continuously
@@ -1108,17 +1419,18 @@ class HackConvo {
 
     renderMessages() {
         const messagesList = document.getElementById('messages-list');
-        messagesList.innerHTML = '';
-        
-        this.messages.forEach(message => {
+        // Only append new messages
+        if (!this.lastRenderedMessageCount) this.lastRenderedMessageCount = 0;
+        const newMessages = this.messages.slice(this.lastRenderedMessageCount);
+        newMessages.forEach(message => {
             const messageElement = document.createElement('div');
             messageElement.className = `message ${message.own ? 'own' : ''}`;
-            
             // Only show author name for received messages (not own messages)
             const authorDisplay = message.own ? '' : `<span class="message-author">${message.author}</span>`;
-            
+            // Ensure avatar URL is valid
+            const avatarUrl = message.avatar || `https://ui-avatars.com/api/?name=${message.author}&background=333&color=fff`;
             messageElement.innerHTML = `
-                <img src="${message.avatar}" alt="${message.author}" class="message-avatar">
+                <img src="${avatarUrl}" alt="${message.author}" class="message-avatar" onerror="this.src='https://ui-avatars.com/api/?name=${message.author}&background=333&color=fff'">
                 <div class="message-content">
                     <div class="message-header">
                         ${authorDisplay}
@@ -1131,7 +1443,7 @@ class HackConvo {
             `;
             messagesList.appendChild(messageElement);
         });
-        
+        this.lastRenderedMessageCount = this.messages.length;
         this.scrollToBottom();
     }
 
@@ -1158,6 +1470,12 @@ class HackConvo {
     }
 
     sendMessage() {
+        // Prevent sending messages in read-only mode
+        if (this.isReadOnly) {
+            this.showNotification('Please register to send messages', 'warning');
+            return;
+        }
+        
         const input = document.getElementById('message-input');
         const text = input.value.trim();
         
@@ -1166,7 +1484,7 @@ class HackConvo {
         const message = {
             id: this.generateId(),
             author: this.currentUser.username,
-            avatar: this.currentUser.avatar,
+            avatar: this.currentUser.avatar || `https://ui-avatars.com/api/?name=${this.currentUser.username}&background=333&color=fff`,
             text: text,
             timestamp: Date.now(),
             own: true
@@ -1212,8 +1530,10 @@ class HackConvo {
     }
 
     handleTyping() {
-        const now = Date.now();
+        // Don't send typing indicators in read-only mode
+        if (this.isReadOnly) return;
         
+        const now = Date.now();
         // Only send typing indicator if enough time has passed
         if (now - this.lastTypingTime > 1000) {
             const typingData = {
@@ -1221,18 +1541,14 @@ class HackConvo {
                 author: this.currentUser.username,
                 timestamp: now
             };
-            
             // Send typing indicator via Firebase
-            if (this.push && this.messagesRef) {
+            if (this.push && this.database) {
                 this.push(this.ref(this.database, 'typing'), typingData);
             }
-            
             this.lastTypingTime = now;
         }
-        
         // Clear existing timeout
         clearTimeout(this.typingTimeout);
-        
         // Set new timeout to stop typing indicator
         this.typingTimeout = setTimeout(() => {
             this.clearTyping();
@@ -1244,7 +1560,49 @@ class HackConvo {
     }
 
     setupTypingIndicator() {
-        // This will be handled by WebSocket messages now
+        if (this.onValue && this.database) {
+            const typingRef = this.ref(this.database, 'typing');
+            this.onValue(typingRef, (snapshot) => {
+                const data = snapshot.val();
+                if (data) {
+                    // Get all recent typing events from other users (within 3 seconds)
+                    const now = Date.now();
+                    const typingEvents = Object.values(data)
+                        .filter(e => e.author && e.author !== this.currentUser.username && now - e.timestamp < 3000)
+                        .map(e => e.author);
+                    // Remove duplicates
+                    const uniqueAuthors = [...new Set(typingEvents)];
+                    if (uniqueAuthors.length > 0) {
+                        this.showTypingIndicatorMultiple(uniqueAuthors);
+                    } else {
+                        this.hideTypingIndicator();
+                    }
+                } else {
+                    this.hideTypingIndicator();
+                }
+            });
+        }
+    }
+
+    showTypingIndicatorMultiple(usernames) {
+        const indicator = document.getElementById('typing-indicator');
+        indicator.style.display = 'flex';
+        let text = '';
+        if (usernames.length === 1) {
+            text = `${usernames[0]} is typing...`;
+        } else if (usernames.length === 2) {
+            text = `${usernames[0]} and ${usernames[1]} are typing...`;
+        } else if (usernames.length <= 4) {
+            text = `${usernames.slice(0, -1).join(', ')} and ${usernames[usernames.length - 1]} are typing...`;
+        } else {
+            text = `${usernames.slice(0, 2).join(', ')} and ${usernames.length - 2} others are typing...`;
+        }
+        indicator.querySelector('.typing-text').textContent = text;
+    }
+
+    hideTypingIndicator() {
+        const indicator = document.getElementById('typing-indicator');
+        indicator.style.display = 'none';
     }
 
     updateTypingIndicator() {
@@ -1280,7 +1638,14 @@ class HackConvo {
     }
 
     updateOnlineCount() {
-        const count = this.onlineUsers.size + 1; // +1 for current user
+        // Count all users in the onlineUsers Map (which now includes current user if they're online)
+        const count = this.onlineUsers.size;
+        
+        // Debug logging
+        console.log('[DEBUG] Online count calculation:');
+        console.log('- onlineUsers.size:', count);
+        console.log('- onlineUsers keys:', Array.from(this.onlineUsers.keys()));
+        console.log('- onlineUsers values:', Array.from(this.onlineUsers.values()).map(u => u.username));
         
         // Update all online count displays
         const onlineCountEl = document.getElementById('online-count');
@@ -1420,7 +1785,10 @@ function saveSettings() {
         
         // Update header displays
         document.getElementById('header-username').textContent = username;
-        document.getElementById('user-avatar').src = app.currentUser.avatar;
+        
+        // Ensure avatar URL is valid
+        const avatarUrl = app.currentUser.avatar || `https://ui-avatars.com/api/?name=${username}&background=333&color=fff`;
+        document.getElementById('user-avatar').src = avatarUrl;
     }
     
     app.setTheme(theme);
@@ -1432,6 +1800,25 @@ function saveSettings() {
 
 // Initialize app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
+    const loadTime = Date.now();
+    console.log('DOM loaded, initializing HackConvo...', new Date(loadTime).toISOString());
+    
+    // Check if this is a rapid reload
+    const lastLoadTime = localStorage.getItem('lastLoadTime');
+    if (lastLoadTime && (loadTime - parseInt(lastLoadTime)) < 1000) {
+        console.warn('Rapid page reload detected! Time between loads:', loadTime - parseInt(lastLoadTime), 'ms');
+    }
+    localStorage.setItem('lastLoadTime', loadTime.toString());
+    
+    // Add global error handler to catch undefined URLs
+    window.addEventListener('error', (event) => {
+        if (event.target && event.target.src && event.target.src.includes('undefined')) {
+            console.error('Undefined URL detected:', event.target.src);
+            console.error('Element:', event.target);
+            console.error('Stack trace:', new Error().stack);
+        }
+    });
+    
     window.app = new HackConvo();
     
     // Handle scroll-to-bottom visibility
